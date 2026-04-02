@@ -2,7 +2,7 @@
 
 Pi extension that:
 
-- creates Apple Music playlists from natural-language descriptions
+- previews and creates Apple Music playlists from natural-language descriptions
 - places generated playlists inside the `piMusic` playlist folder in Apple Music
 - controls the local Music app on macOS (`play`, `pause`, `next`, `previous`, shuffle/random, repeat, volume, playlist playback)
 
@@ -10,6 +10,8 @@ Pi extension that:
 
 Examples:
 
+- "Make me a playlist with tropical house, deep house, jazzy soulful tunes"
+- "Preview a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Create an Apple Music playlist with tropical house, deep house, jazzy soulful tunes"
 - "Pause Apple Music"
 - "Skip this track"
@@ -187,7 +189,9 @@ You can also store the same file in:
 
 Once configured, try one of these:
 
+- "Preview a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Create an Apple Music playlist with tropical house, deep house, jazzy soulful tunes"
+- `/apple-music-preview tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-make tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-status`
 
@@ -211,13 +215,16 @@ pi -e ./extensions/apple-music/index.ts
 
 Natural language:
 
+- "Preview a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Create me a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Pause the music"
 - "Turn shuffle on and skip"
 - "Set repeat to all"
 - "Play my playlist Sunset House"
 
-When playlists are created through pi, they are intended to live inside the `piMusic` folder. If Apple Music library sync is delayed, a newly created playlist may briefly show as pending before it appears in Music.app and gets moved into the folder.
+For playlist generation, the preferred UX is preview first and create on confirmation. If the user explicitly says to create immediately, pi can bypass preview.
+
+When playlists are created through pi, they are intended to live inside the `piMusic` folder. On macOS the extension waits about 10 seconds before attempting to move the playlist, then retries a few times in case Music.app library sync is still catching up.
 
 Slash commands:
 
@@ -229,6 +236,7 @@ Slash commands:
 - `/apple-music-prev`
 - `/apple-music-shuffle on`
 - `/apple-music-repeat off|one|all`
+- `/apple-music-preview <description>`
 - `/apple-music-make <description>`
 
 ## Notes
@@ -236,5 +244,6 @@ Slash commands:
 - Playlist creation needs valid Apple Music API credentials.
 - Local transport controls currently target **macOS Music.app**.
 - Generated playlists are placed in the `piMusic` folder when Music.app can see them.
+- The extension currently uses AppleScript to move playlists into `piMusic`; the Apple Music web API support for folder inspection does not imply playlist move support.
 - "random" is implemented via shuffle.
 - A local helper page is available at `helper/music-user-token.html`, served by `npm run token-helper`.
