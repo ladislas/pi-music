@@ -89,6 +89,7 @@ type PlaylistPlan = {
   normalizedDescription: string;
   inferredGenres: string[];
   matchedSeedEntries: SeedGenreEntry[];
+  facets: string[];
   queries: string[];
   seedArtists: string[];
   relatedArtists: string[];
@@ -309,6 +310,16 @@ function hasPattern(patterns: RegExp[], value: string): boolean {
   return patterns.some((pattern) => pattern.test(value));
 }
 
+function buildPromptFacets(description: string, matchedEntries: SeedGenreEntry[], inferredGenres: string[], moods: string[]): string[] {
+  const rawSegments = splitPromptSegments(description).map((segment) => normalizeText(segment));
+  const matchedFacetAliases = matchedEntries.flatMap((entry) => [entry.canonicalGenre, ...(entry.aliases ?? []).slice(0, 2)]).map(normalizeText);
+
+  return unique([...rawSegments, ...inferredGenres.map(normalizeText), ...matchedFacetAliases, ...moods.map(normalizeText)])
+    .filter(Boolean)
+    .filter((facet) => facet.length >= 3)
+    .slice(0, 8);
+}
+
 function buildPlaylistPlan(description: string): PlaylistPlan {
   const normalizedDescription = normalizeText(description);
   const matchedEntries: SeedGenreEntry[] = [];
@@ -340,17 +351,18 @@ function buildPlaylistPlan(description: string): PlaylistPlan {
     ].map(normalizeText),
   ).filter(Boolean);
 
+  const facets = buildPromptFacets(description, matchedEntries, inferredGenres, moods);
+
   const queries = unique(
     [
       normalizedDescription,
-      ...splitPromptSegments(description),
-      ...inferredGenres,
+      ...facets,
       ...matchedEntries.flatMap((entry) => entry.aliases.slice(0, 2)),
       ...moods.slice(0, 3).map((mood) => `${mood} ${inferredGenres[0] ?? "music"}`),
     ]
       .map((query) => normalizeText(query))
       .filter((query) => query.length >= 3),
-  ).slice(0, 8);
+  ).slice(0, 10);
 
   const discoveryIntent = hasPattern(DISCOVERY_PATTERNS, description);
   const starterIntent = discoveryIntent || hasPattern(STARTER_PATTERNS, description);
@@ -362,6 +374,7 @@ function buildPlaylistPlan(description: string): PlaylistPlan {
     normalizedDescription,
     inferredGenres,
     matchedSeedEntries: matchedEntries,
+    facets,
     queries,
     seedArtists,
     relatedArtists,
@@ -1005,6 +1018,7 @@ async function previewCuratedPlaylist(
     `Proposed playlist: \"${playlistName}\"`,
     `Tracks: ${trackCount}`,
     plan.inferredGenres.length > 0 ? `Genres: ${plan.inferredGenres.join(", ")}` : "",
+    plan.facets.length > 1 ? `Facets: ${plan.facets.slice(0, 5).join(", ")}` : "",
     plan.seedArtists.length > 0 ? `Seed artists: ${plan.seedArtists.slice(0, 6).join(", ")}` : "",
     plan.discoveryIntent || plan.starterIntent ? "Mode: discovery / starter" : "",
   ]
@@ -1069,6 +1083,7 @@ async function createCuratedPlaylist(
   const remainder = selected.length > 10 ? `\n...and ${selected.length - 10} more.` : "";
   const planSummary = [
     plan.inferredGenres.length > 0 ? `Genres: ${plan.inferredGenres.join(", ")}` : "",
+    plan.facets.length > 1 ? `Facets: ${plan.facets.slice(0, 5).join(", ")}` : "",
     plan.seedArtists.length > 0 ? `Seed artists: ${plan.seedArtists.slice(0, 6).join(", ")}` : "",
     plan.discoveryIntent || plan.starterIntent ? "Mode: discovery / starter" : "",
   ]

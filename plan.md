@@ -220,14 +220,14 @@ Expected outcome:
 ## Suggested technical tasks
 
 ### Selection and scoring
-- [ ] Review current scoring weights in `extensions/apple-music/index.ts`
-- [ ] Add score-band grouping helper
-- [ ] Add weighted random selector
-- [ ] Add stronger diversity constraints in `selectPlaylistSongs`
-- [ ] Add album-level diversity constraint
+- [x] Review current scoring weights in `extensions/apple-music/index.ts`
+- [x] Add score-band grouping helper
+- [x] Add weighted random selector
+- [x] Add stronger diversity constraints in `selectPlaylistSongs`
+- [x] Add album-level diversity constraint
 
 ### Prompt structure / balancing
-- [ ] Parse prompt into facets more explicitly
+- [x] Parse prompt into facets more explicitly
 - [ ] Score candidates per facet
 - [ ] Add slot allocation across facets
 - [ ] Ensure final playlist covers all major requested facets
@@ -240,16 +240,16 @@ Expected outcome:
 - [ ] Add recency decay / expiry
 
 ### Preview / create stability
-- [ ] Store exact reviewed proposals for confirmation flows
-- [ ] Ensure create-from-preview does not recompute selection
-- [ ] Decide how random seed should be stored and reused
+- [x] Store exact reviewed proposals for confirmation flows
+- [x] Ensure create-from-preview does not recompute selection
+- [x] Decide how random seed should be stored and reused
 
 ### Testing
-- [ ] Re-run the same prompt multiple times and compare overlap
+- [x] Re-run the same prompt multiple times and compare overlap
 - [ ] Test similar prompts and compare overlap
 - [ ] Test multi-facet prompts for balance
 - [ ] Test preview -> create stability
-- [ ] Test direct-create bypass behavior
+- [x] Test direct-create bypass behavior
 
 ## Success criteria
 A successful next version should:
