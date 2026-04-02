@@ -107,6 +107,7 @@ type CandidateSong = {
   artistTopSongHits: number;
   albumTrackHits: number;
   playlistTrackHits: number;
+  editorialAlbumHits: number;
   editorialPlaylistHits: number;
   seedArtistHits: number;
   relatedArtistHits: number;
@@ -426,6 +427,7 @@ function trackCandidate(map: Map<string, CandidateSong>, song: AppleMusicSong): 
     artistTopSongHits: 0,
     albumTrackHits: 0,
     playlistTrackHits: 0,
+    editorialAlbumHits: 0,
     editorialPlaylistHits: 0,
     seedArtistHits: 0,
     relatedArtistHits: 0,
@@ -476,6 +478,7 @@ function scoreCandidate(songCandidate: CandidateSong, plan: PlaylistPlan): numbe
   score += songCandidate.artistTopSongHits * 20;
   score += songCandidate.albumTrackHits * 8;
   score += songCandidate.playlistTrackHits * 14;
+  score += songCandidate.editorialAlbumHits * 12;
   score += songCandidate.editorialPlaylistHits * 10;
   score += songCandidate.seedArtistHits * 36;
   score += songCandidate.relatedArtistHits * 18;
@@ -501,6 +504,11 @@ function scoreCandidate(songCandidate: CandidateSong, plan: PlaylistPlan): numbe
   if (plan.discoveryIntent || plan.starterIntent) score += songCandidate.seedArtistHits > 0 ? 10 : 0;
   if (songCandidate.playlistTrackHits > 0 && songCandidate.artistTopSongHits > 0) score += 8;
   if (plan.facets.length > 1 && songCandidate.facetMatches.size >= 2) score += 10;
+  if (songCandidate.editorialPlaylistHits > 0 && songCandidate.editorialAlbumHits > 0) score += 14;
+  if (songCandidate.editorialPlaylistHits >= 2) score += 10;
+
+  return score;
+}
 
   return score;
 }
@@ -789,22 +797,28 @@ function isEditorialPlaylist(playlist: AppleMusicPlaylist): boolean {
   return curator.includes("apple music") || Boolean(playlist.attributes?.editorialNotes?.standard || playlist.attributes?.description?.standard);
 }
 
+function isEditorialAlbum(album: AppleMusicAlbum): boolean {
+  return Boolean(album.attributes?.editorialNotes?.standard || album.attributes?.editorialNotes?.short);
+}
+
 async function collectAlbumCandidates(
   config: Required<AppleMusicConfig>,
   plan: PlaylistPlan,
   candidates: Map<string, CandidateSong>,
 ): Promise<void> {
-  for (const query of plan.queries.slice(0, 4)) {
-    const response = await searchCatalog(config, query, ["albums"], 3);
+  for (const query of plan.queries.slice(0, 5)) {
+    const response = await searchCatalog(config, query, ["albums"], 4);
     for (const album of response.results?.albums?.data ?? []) {
       if (!album.id) continue;
-      const tracks = await fetchAlbumTracks(config, album.id, 5);
+      const editorial = isEditorialAlbum(album);
+      const tracks = await fetchAlbumTracks(config, album.id, editorial ? 6 : 5);
       for (const song of tracks) {
         const candidate = trackCandidate(candidates, song);
         annotateFacetMatches(candidate, plan);
         candidate.albumTrackHits += 1;
+        if (editorial) candidate.editorialAlbumHits += 1;
         candidate.queryMatches.add(query);
-        candidate.reasons.add(`album signal: ${album.attributes?.name ?? query}`);
+        candidate.reasons.add(`${editorial ? "editorial album" : "album signal"}: ${album.attributes?.name ?? query}`);
       }
     }
   }
@@ -815,8 +829,8 @@ async function collectPlaylistCandidates(
   plan: PlaylistPlan,
   candidates: Map<string, CandidateSong>,
 ): Promise<void> {
-  for (const query of plan.queries.slice(0, 4)) {
-    const response = await searchCatalog(config, query, ["playlists"], 3);
+  for (const query of plan.queries.slice(0, 5)) {
+    const response = await searchCatalog(config, query, ["playlists"], 4);
     for (const playlist of response.results?.playlists?.data ?? []) {
       if (!playlist.id) continue;
       const tracks = await fetchPlaylistTracks(config, playlist.id, plan.discoveryIntent || plan.starterIntent ? 14 : 10);
