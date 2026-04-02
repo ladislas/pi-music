@@ -928,6 +928,19 @@ function canonicalTrackSignature(candidate: CandidateSong): string {
   return canonicalizeTrackTitle(candidate.song.attributes?.name ?? "");
 }
 
+function songArtistIncludesTarget(songArtistName: string, targetArtistName: string): boolean {
+  const normalizedSongArtist = normalizeText(songArtistName);
+  const normalizedTargetArtist = normalizeText(targetArtistName);
+  if (!normalizedSongArtist || !normalizedTargetArtist) return false;
+  if (normalizedSongArtist === normalizedTargetArtist) return true;
+
+  const artistParts = normalizedSongArtist
+    .split(/,|&| feat\.? | featuring | with /)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return artistParts.includes(normalizedTargetArtist);
+}
+
 function canSelectCandidate(
   candidate: CandidateSong,
   selected: CandidateSong[],
@@ -1217,15 +1230,15 @@ async function collectDiscographyCandidates(
   if (!artist?.id) return;
 
   const artistName = artist.attributes?.name ?? plan.targetArtist;
-  const normalizedArtistName = normalizeText(artistName);
-  const requirePrimaryArtistMatch = plan.discographyIntent || plan.strictArtistOnly;
+  const strictPrimaryArtistOnly = plan.strictArtistOnly;
   const albums = await fetchArtistAlbums(config, artist.id, 100);
   for (const album of albums) {
     if (!album.id) continue;
     const tracks = await fetchAlbumTracks(config, album.id, 100);
     for (const song of tracks) {
-      const songArtist = normalizeText(song.attributes?.artistName ?? "");
-      if (requirePrimaryArtistMatch && songArtist !== normalizedArtistName) continue;
+      const songArtistName = song.attributes?.artistName ?? "";
+      if (strictPrimaryArtistOnly && normalizeText(songArtistName) !== normalizeText(artistName)) continue;
+      if (!strictPrimaryArtistOnly && !songArtistIncludesTarget(songArtistName, artistName)) continue;
       const candidate = trackCandidate(candidates, song);
       annotateFacetMatches(candidate, plan);
       candidate.albumTrackHits += 3;
@@ -1237,8 +1250,9 @@ async function collectDiscographyCandidates(
 
   const topSongs = await fetchArtistTopSongs(config, artist.id, 50);
   for (const song of topSongs) {
-    const songArtist = normalizeText(song.attributes?.artistName ?? "");
-    if (requirePrimaryArtistMatch && songArtist !== normalizedArtistName) continue;
+    const songArtistName = song.attributes?.artistName ?? "";
+    if (strictPrimaryArtistOnly && normalizeText(songArtistName) !== normalizeText(artistName)) continue;
+    if (!strictPrimaryArtistOnly && !songArtistIncludesTarget(songArtistName, artistName)) continue;
     const candidate = trackCandidate(candidates, song);
     annotateFacetMatches(candidate, plan);
     candidate.artistTopSongHits += 2;
@@ -1597,11 +1611,11 @@ async function previewCuratedPlaylist(
     : [];
 
   const collaborativeSections = [
+    plan.optionalDirections.length > 0 ? `Possible directions I found:\n${formatBulletList(plan.optionalDirections.slice(0, 3))}` : "",
+    plan.familiarArtists.length > 0 && !plan.discographyIntent ? `Familiar / canonical artists you may want less of:\n${formatBulletList(plan.familiarArtists.slice(0, 5))}` : "",
     plan.clarifyingQuestions.length > 0 || discographyQuestions.length > 0
       ? `Quick questions before we lock it in:\n${formatBulletList((plan.discographyIntent ? discographyQuestions : plan.clarifyingQuestions).slice(0, 3))}`
       : "",
-    plan.optionalDirections.length > 0 ? `Possible directions I found:\n${formatBulletList(plan.optionalDirections.slice(0, 3))}` : "",
-    plan.familiarArtists.length > 0 && !plan.discographyIntent ? `Familiar / canonical artists you may want less of:\n${formatBulletList(plan.familiarArtists.slice(0, 5))}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -1612,10 +1626,10 @@ async function previewCuratedPlaylist(
         type: "text",
         text:
           `${planSummary}` +
-          `${collaborativeSections ? `\n\n${collaborativeSections}` : ""}` +
           `\n\nHigh-confidence picks:\n${highConfidencePreview}` +
           `\n\n${plan.discographyIntent ? `Tracklist sample (first ${previewDisplayCount}):` : "Full tracklist:"}\n${preview}` +
-          `\n\nReply with create/confirm to make it in Apple Music, or tell me how to refine it (for example: more spa, less famous artists, more vocals, more discovery, less Björk).`,
+          `${collaborativeSections ? `\n\n${collaborativeSections}` : ""}` +
+          `\n\nIf this looks good, reply create to make it in Apple Music. Otherwise reply refine <what to change> to adjust it.`,
       },
     ],
     details: {
