@@ -112,6 +112,7 @@ type CandidateSong = {
   relatedArtistHits: number;
   queryMatches: Set<string>;
   genresMatched: Set<string>;
+  facetMatches: Set<string>;
   reasons: Set<string>;
   score: number;
 };
@@ -430,6 +431,7 @@ function trackCandidate(map: Map<string, CandidateSong>, song: AppleMusicSong): 
     relatedArtistHits: 0,
     queryMatches: new Set<string>(),
     genresMatched: new Set<string>(),
+    facetMatches: new Set<string>(),
     reasons: new Set<string>(),
     score: 0,
   };
@@ -453,6 +455,16 @@ function isGenericArtistName(value: string): boolean {
   return /(house music dj|various artists|workout|relax|sleep|study|beats|background music|meditation)/.test(normalized);
 }
 
+function annotateFacetMatches(candidate: CandidateSong, plan: PlaylistPlan): void {
+  const haystack = buildSongHaystack(candidate.song);
+  for (const facet of plan.facets) {
+    const normalizedFacet = normalizeText(facet);
+    if (normalizedFacet && haystack.includes(normalizedFacet)) {
+      candidate.facetMatches.add(facet);
+    }
+  }
+}
+
 function scoreCandidate(songCandidate: CandidateSong, plan: PlaylistPlan): number {
   const song = songCandidate.song;
   const title = normalizeText(song.attributes?.name ?? "");
@@ -469,6 +481,7 @@ function scoreCandidate(songCandidate: CandidateSong, plan: PlaylistPlan): numbe
   score += songCandidate.relatedArtistHits * 18;
   score += songCandidate.queryMatches.size * 4;
   score += songCandidate.genresMatched.size * 8;
+  score += songCandidate.facetMatches.size * 10;
 
   for (const genre of plan.inferredGenres) {
     const normalizedGenre = normalizeText(genre);
@@ -487,6 +500,7 @@ function scoreCandidate(songCandidate: CandidateSong, plan: PlaylistPlan): numbe
   if ((song.attributes?.genreNames ?? []).length > 0) score += 3;
   if (plan.discoveryIntent || plan.starterIntent) score += songCandidate.seedArtistHits > 0 ? 10 : 0;
   if (songCandidate.playlistTrackHits > 0 && songCandidate.artistTopSongHits > 0) score += 8;
+  if (plan.facets.length > 1 && songCandidate.facetMatches.size >= 2) score += 10;
 
   return score;
 }
@@ -671,6 +685,7 @@ async function collectDirectSongCandidates(
     const response = await searchCatalog(config, query, ["songs"], 10);
     for (const song of response.results?.songs?.data ?? []) {
       const candidate = trackCandidate(candidates, song);
+      annotateFacetMatches(candidate, plan);
       candidate.directSongHits += 1;
       candidate.queryMatches.add(query);
       candidate.reasons.add(`song search: ${query}`);
@@ -696,6 +711,7 @@ async function collectArtistCandidates(
     const topSongs = await fetchArtistTopSongs(config, artist.id, plan.discoveryIntent || plan.starterIntent ? 6 : 4);
     for (const song of topSongs) {
       const candidate = trackCandidate(candidates, song);
+      annotateFacetMatches(candidate, plan);
       candidate.artistTopSongHits += 1;
       if (plan.seedArtists.includes(artistName)) {
         candidate.seedArtistHits += 1;
@@ -725,6 +741,7 @@ async function collectAlbumCandidates(
       const tracks = await fetchAlbumTracks(config, album.id, 5);
       for (const song of tracks) {
         const candidate = trackCandidate(candidates, song);
+        annotateFacetMatches(candidate, plan);
         candidate.albumTrackHits += 1;
         candidate.queryMatches.add(query);
         candidate.reasons.add(`album signal: ${album.attributes?.name ?? query}`);
@@ -746,6 +763,7 @@ async function collectPlaylistCandidates(
       const editorial = isEditorialPlaylist(playlist);
       for (const song of tracks) {
         const candidate = trackCandidate(candidates, song);
+        annotateFacetMatches(candidate, plan);
         candidate.playlistTrackHits += 1;
         if (editorial) candidate.editorialPlaylistHits += 1;
         candidate.queryMatches.add(query);
