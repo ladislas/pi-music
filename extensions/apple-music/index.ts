@@ -608,7 +608,7 @@ async function curateSongs(config: Required<AppleMusicConfig>, description: stri
 async function createPlaylist(
   config: Required<AppleMusicConfig>,
   name: string,
-  description: string,
+  _description: string,
   songs: AppleMusicSong[],
 ): Promise<{ id: string; songs: AppleMusicSong[] }> {
   const createResponse = await appleMusicRequest<CreatePlaylistResponse>("/v1/me/library/playlists", config, {
@@ -616,9 +616,6 @@ async function createPlaylist(
     body: JSON.stringify({
       attributes: {
         name,
-        description: {
-          standard: description,
-        },
       },
     }),
   });
