@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -160,6 +160,7 @@ type PlannerRuntime = {
   model?: any;
   modelRegistry?: any;
   plannerModel?: string;
+  cwd?: string;
 };
 
 const APPLE_MUSIC_FOLDER_NAME = "piMusic";
@@ -374,6 +375,45 @@ function songLabel(song: AppleMusicSong): string {
 
 function formatBulletList(values: string[], prefix = "- "): string {
   return values.map((value) => `${prefix}${value}`).join("\n");
+}
+
+function slugify(value: string): string {
+  return normalizeText(value).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "playlist";
+}
+
+function proposalDirectory(cwd: string): string {
+  return join(cwd, ".pi", "apple-music-proposals");
+}
+
+function candidateToSerializable(candidate: CandidateSong) {
+  return {
+    id: candidate.song.id,
+    name: candidate.song.attributes?.name,
+    artistName: candidate.song.attributes?.artistName,
+    albumName: candidate.song.attributes?.albumName,
+    genreNames: candidate.song.attributes?.genreNames,
+    url: candidate.song.attributes?.url,
+    score: candidate.score,
+    reasons: [...candidate.reasons, ...summarizeCandidateSignals(candidate)].slice(0, 8),
+  };
+}
+
+async function writeProposalFile(
+  cwd: string,
+  data: Record<string, unknown>,
+  proposalId?: string,
+): Promise<{ proposalId: string; proposalPath: string }> {
+  const dir = proposalDirectory(cwd);
+  await mkdir(dir, { recursive: true });
+  const resolvedProposalId = proposalId ?? `${Date.now()}-${slugify(String(data.playlistName ?? data.description ?? "proposal"))}`;
+  const proposalPath = join(dir, `${resolvedProposalId}.json`);
+  await writeFile(proposalPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  return { proposalId: resolvedProposalId, proposalPath };
+}
+
+async function updateProposalFile(proposalPath: string, patch: Record<string, unknown>): Promise<void> {
+  const current = JSON.parse(await readFile(proposalPath, "utf8")) as Record<string, unknown>;
+  await writeFile(proposalPath, `${JSON.stringify({ ...current, ...patch }, null, 2)}\n`, "utf8");
 }
 
 function assistantTextContent(text: string) {
@@ -1562,15 +1602,47 @@ async function buildCuratedPlaylistPreview(
   const selected = selectedCandidates.map((candidate) => candidate.song);
   const playlistName = (params.playlistName?.trim() || derivePlaylistName(params.description)).slice(0, 100);
   const playlistDescription = buildStoredPlaylistDescription(params.description, plan, selectionSeed);
+  const selectedIds = new Set(selectedCandidates.map((candidate) => candidate.song.id));
+  const skippedCandidates = candidates.filter((candidate) => !selectedIds.has(candidate.song.id)).map((candidate) => ({
+    ...candidate,
+    skipReason: plan.discographyIntent ? "not-selected-for-final-playlist" : "not-selected-after-ranking",
+  }));
+
+  let proposalId: string | undefined;
+  let proposalPath: string | undefined;
+  if (runtime?.cwd) {
+    const persisted = await writeProposalFile(runtime.cwd, {
+      type: "apple-music-playlist-proposal",
+      createdAt: new Date().toISOString(),
+      description: params.description,
+      playlistName,
+      playlistDescription,
+      trackCount,
+      selectionSeed,
+      plan,
+      counts: {
+        candidateCount: candidates.length,
+        selectedCount: selectedCandidates.length,
+        skippedCount: skippedCandidates.length,
+      },
+      selectedTracks: selectedCandidates.map(candidateToSerializable),
+      skippedTracks: skippedCandidates.map((candidate) => ({ ...candidateToSerializable(candidate), skipReason: candidate.skipReason })),
+    });
+    proposalId = persisted.proposalId;
+    proposalPath = persisted.proposalPath;
+  }
 
   return {
     plan,
     trackCount,
     selectedCandidates,
+    skippedCandidates,
     selected,
     playlistName,
     playlistDescription,
     selectionSeed,
+    proposalId,
+    proposalPath,
   };
 }
 
@@ -1591,7 +1663,8 @@ async function previewCuratedPlaylist(
     : 0;
   const planSummary = [
     `Proposed playlist: \"${playlistName}\"`,
-    `Tracks: ${trackCount}`,
+    plan.discographyIntent ? `Selected tracks: ${selectedCandidates.length}` : `Tracks: ${trackCount}`,
+    plan.discographyIntent && previewData.skippedCandidates.length > 0 ? `Skipped tracks: ${previewData.skippedCandidates.length} (saved in proposal JSON)` : "",
     plan.discographyIntent && selected.length > previewDisplayCount ? `Showing first ${previewDisplayCount} of ${selected.length} tracks below` : "",
     plan.inferredGenres.length > 0 ? `Genres: ${plan.inferredGenres.join(", ")}` : "",
     plan.facets.length > 1 ? `Facets: ${plan.facets.slice(0, 5).join(", ")}` : "",
@@ -1639,6 +1712,8 @@ async function previewCuratedPlaylist(
       trackCount,
       plan,
       selectionSeed: previewData.selectionSeed,
+      proposalId: previewData.proposalId,
+      proposalPath: previewData.proposalPath,
       uncoveredMajorFacets,
       songs: selectedCandidates.map((candidate) => ({
         id: candidate.song.id,
@@ -1674,6 +1749,17 @@ async function createCuratedPlaylist(
 
   const created = await createPlaylist(config, playlistName, playlistDescription, selected, parentFolderId);
   const movedToFolder = parentFolderId ? true : isMacOS() ? await movePlaylistToFolder(pi, playlistName) : false;
+  if (previewData.proposalPath) {
+    await updateProposalFile(previewData.proposalPath, {
+      updatedAt: new Date().toISOString(),
+      createdPlaylist: {
+        playlistId: created.id,
+        playlistName,
+        movedToFolder,
+        parentFolderId,
+      },
+    });
+  }
 
   let playbackMessage = "";
   if (params.startPlaying && isMacOS()) {
@@ -1717,6 +1803,8 @@ async function createCuratedPlaylist(
       movedToFolder,
       plan,
       selectionSeed: previewData.selectionSeed,
+      proposalId: previewData.proposalId,
+      proposalPath: previewData.proposalPath,
       uncoveredMajorFacets,
       songs: selectedCandidates.map((candidate) => ({
         id: candidate.song.id,
@@ -1918,7 +2006,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Working on playlist preview...", "info");
         const config = await loadConfig(ctx.cwd);
         ensureApiConfig(config);
-        const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
         appendAssistantTextMessage(pi, ctx, text);
         ctx.ui.notify(text, "info");
@@ -1946,7 +2034,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Working on playlist preview...", "info");
         const config = await loadConfig(ctx.cwd);
         ensureApiConfig(config);
-        const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
         appendAssistantTextMessage(pi, ctx, text);
         ctx.ui.notify(text, "info");
@@ -1974,7 +2062,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Working on playlist creation...", "info");
         const config = await loadConfig(ctx.cwd);
         ensureApiConfig(config);
-        const result = await createCuratedPlaylist(pi, config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const result = await createCuratedPlaylist(pi, config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
         appendAssistantTextMessage(pi, ctx, text);
         ctx.ui.notify(text, "info");
