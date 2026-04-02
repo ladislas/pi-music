@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -418,6 +418,53 @@ async function writeProposalFile(
 async function updateProposalFile(proposalPath: string, patch: Record<string, unknown>): Promise<void> {
   const current = JSON.parse(await readFile(proposalPath, "utf8")) as Record<string, unknown>;
   await writeFile(proposalPath, `${JSON.stringify({ ...current, ...patch }, null, 2)}\n`, "utf8");
+}
+
+async function resolveProposalPath(cwd: string, proposalRef?: string): Promise<string | undefined> {
+  const dir = proposalDirectory(cwd);
+  try {
+    const entries = (await readdir(dir)).filter((name) => name.endsWith(".json")).sort();
+    if (entries.length === 0) return undefined;
+    if (!proposalRef || proposalRef === "last") {
+      return join(dir, entries[entries.length - 1]);
+    }
+    if (proposalRef.endsWith(".json")) return join(dir, proposalRef);
+    const exact = entries.find((name) => name === `${proposalRef}.json` || name.includes(proposalRef));
+    return exact ? join(dir, exact) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function loadProposal(cwd: string, proposalRef?: string): Promise<{ path: string; data: any } | undefined> {
+  const path = await resolveProposalPath(cwd, proposalRef);
+  if (!path) return undefined;
+  return { path, data: JSON.parse(await readFile(path, "utf8")) };
+}
+
+function summarizeSkippedTracks(proposal: any, maxItems = 20): string {
+  const skippedTracks = Array.isArray(proposal.skippedTracks) ? proposal.skippedTracks : [];
+  if (skippedTracks.length === 0) return "No skipped tracks recorded.";
+
+  const byReason = new Map<string, any[]>();
+  for (const track of skippedTracks) {
+    const reason = String(track.skipReason ?? "unknown");
+    const list = byReason.get(reason) ?? [];
+    list.push(track);
+    byReason.set(reason, list);
+  }
+
+  const sections: string[] = [];
+  let shown = 0;
+  for (const [reason, tracks] of byReason.entries()) {
+    if (shown >= maxItems) break;
+    const remaining = maxItems - shown;
+    const sample = tracks.slice(0, remaining).map((track: any) => `- ${track.name ?? "Unknown title"} — ${track.artistName ?? "Unknown artist"}${track.sourceReleaseName ? ` [${track.sourceReleaseName}]` : ""}`);
+    sections.push(`${reason} (${tracks.length})\n${sample.join("\n")}`);
+    shown += sample.length;
+  }
+
+  return sections.join("\n\n");
 }
 
 function assistantTextContent(text: string) {
@@ -2007,6 +2054,8 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         "/apple-music-playlist <description>",
         "/apple-music-preview <description>",
         "/apple-music-make <description>",
+        "/apple-music-proposal [last|proposal-id]",
+        "/apple-music-skipped [last|proposal-id]",
       ];
       ctx.ui.notify(lines.join("\n"), "info");
     },
@@ -2142,6 +2191,51 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
       } catch (error) {
         ctx.ui.notify(`Playlist creation failed: ${error instanceof Error ? error.message : String(error)}`, "error");
       }
+    },
+  });
+
+  pi.registerCommand("apple-music-proposal", {
+    description: "Show the last saved Apple Music proposal or a specific proposal id",
+    handler: async (args: any, ctx: any) => {
+      const proposalRef = args.trim() || "last";
+      const proposal = await loadProposal(ctx.cwd, proposalRef);
+      if (!proposal) {
+        ctx.ui.notify("No Apple Music proposal found.", "warning");
+        return;
+      }
+
+      const summary = [
+        `Proposal: ${proposal.data.playlistName ?? "Untitled"}`,
+        `Path: ${proposal.path}`,
+        proposal.data.counts ? `Counts: ${proposal.data.counts.selectedCount ?? 0} selected, ${proposal.data.counts.skippedCount ?? 0} skipped, ${proposal.data.counts.candidateCount ?? 0} candidates` : "",
+        proposal.data.createdPlaylist?.playlistId ? `Created playlist: ${proposal.data.createdPlaylist.playlistName} (${proposal.data.createdPlaylist.playlistId})` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      appendAssistantTextMessage(pi, ctx, summary);
+      ctx.ui.notify(summary, "info");
+    },
+  });
+
+  pi.registerCommand("apple-music-skipped", {
+    description: "Show skipped tracks for the last saved Apple Music proposal or a specific proposal id",
+    handler: async (args: any, ctx: any) => {
+      const proposalRef = args.trim() || "last";
+      const proposal = await loadProposal(ctx.cwd, proposalRef);
+      if (!proposal) {
+        ctx.ui.notify("No Apple Music proposal found.", "warning");
+        return;
+      }
+
+      const text = [
+        `Skipped tracks for: ${proposal.data.playlistName ?? "Untitled"}`,
+        `Path: ${proposal.path}`,
+        summarizeSkippedTracks(proposal.data),
+      ].join("\n\n");
+
+      appendAssistantTextMessage(pi, ctx, text);
+      ctx.ui.notify(text, "info");
     },
   });
 }
