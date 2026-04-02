@@ -2,6 +2,7 @@
 
 Pi extension that:
 - creates Apple Music playlists from natural-language descriptions
+- places generated playlists inside the `piMusic` playlist folder in Apple Music
 - controls the local Music app on macOS (`play`, `pause`, `next`, `previous`, shuffle/random, repeat, volume, playlist playback)
 
 ## What it can do
@@ -22,6 +23,8 @@ No Apple Music web API token is needed for `play`, `pause`, `next`, `previous`, 
 
 ### 2) Playlist creation via Apple Music API
 To create real playlists in your Apple Music account, configure:
+
+Generated playlists are organized under a `piMusic` folder in Apple Music. On macOS, the extension checks for that folder first and creates it automatically if it does not exist.
 
 - `developerToken`
 - `musicUserToken`
@@ -106,6 +109,8 @@ Natural language:
 - "Set repeat to all"
 - "Play my playlist Sunset House"
 
+When playlists are created through pi, they are intended to live inside the `piMusic` folder. If Apple Music library sync is delayed, a newly created playlist may briefly show as pending before it appears in Music.app and gets moved into the folder.
+
 Slash commands:
 - `/apple-music-help`
 - `/apple-music-status`
@@ -121,5 +126,6 @@ Slash commands:
 
 - Playlist creation needs valid Apple Music API credentials.
 - Local transport controls currently target **macOS Music.app**.
+- Generated playlists are placed in the `piMusic` folder when Music.app can see them.
 - "random" is implemented via shuffle.
 - A local helper page is available at `helper/music-user-token.html`, served by `npm run token-helper`.
