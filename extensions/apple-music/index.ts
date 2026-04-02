@@ -605,7 +605,15 @@ function weightedPickIndex(candidates: CandidateSong[], rng: () => number): numb
   return candidates.length - 1;
 }
 
-function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, seedKey: string): CandidateSong[] {
+function buildFacetTargets(plan: PlaylistPlan, trackCount: number): Map<string, number> {
+  const meaningfulFacets = plan.facets.filter((facet) => facet.length >= 3).slice(0, Math.min(4, trackCount));
+  if (meaningfulFacets.length <= 1) return new Map();
+
+  const baseTarget = Math.max(1, Math.floor(trackCount / meaningfulFacets.length));
+  return new Map(meaningfulFacets.map((facet) => [facet, baseTarget]));
+}
+
+function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, seedKey: string, plan: PlaylistPlan): CandidateSong[] {
   const maxPerArtist = trackCount <= 15 ? 1 : trackCount >= 30 ? 3 : 2;
   const maxPerAlbum = trackCount <= 20 ? 1 : 2;
   const rng = createSeededRng(hashSeed(seedKey));
@@ -616,6 +624,8 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
   const artistCounts = new Map<string, number>();
   const albumCounts = new Map<string, number>();
   const seenTrackSignatures = new Set<string>();
+  const facetTargets = buildFacetTargets(plan, trackCount);
+  const facetCounts = new Map<string, number>();
   const available = [...ranked.slice(0, initialPoolSize)];
   const fallback = [...ranked.slice(initialPoolSize)];
 
@@ -625,6 +635,11 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
     const album = candidate.song.attributes?.albumName ?? "Unknown album";
     const signature = canonicalTrackSignature(candidate);
     if (signature) seenTrackSignatures.add(signature);
+    for (const facet of candidate.facetMatches) {
+      if (facetTargets.has(facet)) {
+        facetCounts.set(facet, (facetCounts.get(facet) ?? 0) + 1);
+      }
+    }
     artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
     albumCounts.set(album, (albumCounts.get(album) ?? 0) + 1);
   };
@@ -634,9 +649,17 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
       available.push(...fallback.splice(0, Math.max(5, targetSelectionCount - preliminary.length)));
     }
 
+    const neededFacets = [...facetTargets.entries()]
+      .filter(([facet, target]) => (facetCounts.get(facet) ?? 0) < target)
+      .map(([facet]) => facet);
+
     let eligible = available.filter((candidate) =>
       canSelectCandidate(candidate, preliminary, artistCounts, albumCounts, seenTrackSignatures, maxPerArtist, maxPerAlbum, true),
     );
+    if (neededFacets.length > 0) {
+      const facetEligible = eligible.filter((candidate) => neededFacets.some((facet) => candidate.facetMatches.has(facet)));
+      if (facetEligible.length > 0) eligible = facetEligible;
+    }
     if (eligible.length === 0) {
       eligible = available.filter((candidate) =>
         canSelectCandidate(candidate, preliminary, artistCounts, albumCounts, seenTrackSignatures, maxPerArtist, maxPerAlbum, false),
@@ -662,15 +685,35 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
 
   const finalized: CandidateSong[] = [];
   const seenSignatures = new Set<string>();
+  const finalizedFacetCounts = new Map<string, number>();
   const preliminaryIds = new Set(preliminary.map((candidate) => candidate.song.id));
   const finalizeFrom = [...preliminary, ...ranked.filter((candidate) => !preliminaryIds.has(candidate.song.id))];
 
-  for (const candidate of finalizeFrom) {
+  const tryAddFinalCandidate = (candidate: CandidateSong): boolean => {
     const signature = canonicalTrackSignature(candidate);
-    if (seenSignatures.has(signature)) continue;
+    if (seenSignatures.has(signature)) return false;
     finalized.push(candidate);
     seenSignatures.add(signature);
+    for (const facet of candidate.facetMatches) {
+      if (facetTargets.has(facet)) {
+        finalizedFacetCounts.set(facet, (finalizedFacetCounts.get(facet) ?? 0) + 1);
+      }
+    }
+    return true;
+  };
+
+  for (const facet of [...facetTargets.keys()]) {
+    const target = facetTargets.get(facet) ?? 0;
+    while ((finalizedFacetCounts.get(facet) ?? 0) < target && finalized.length < trackCount) {
+      const match = finalizeFrom.find((candidate) => !seenSignatures.has(canonicalTrackSignature(candidate)) && candidate.facetMatches.has(facet));
+      if (!match) break;
+      tryAddFinalCandidate(match);
+    }
+  }
+
+  for (const candidate of finalizeFrom) {
     if (finalized.length >= trackCount) break;
+    tryAddFinalCandidate(candidate);
   }
 
   return finalized;
@@ -1004,7 +1047,7 @@ async function buildCuratedPlaylistPreview(
   const trackCount = clamp(Math.round(params.trackCount ?? 25), 5, 100);
   const selectionSeed = params.selectionSeed ?? `${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`;
   const selectionSeedKey = `${params.description}::${params.playlistName ?? ""}::${trackCount}::${selectionSeed}`;
-  const selectedCandidates = selectPlaylistSongs(candidates, trackCount, selectionSeedKey);
+  const selectedCandidates = selectPlaylistSongs(candidates, trackCount, selectionSeedKey, plan);
   if (selectedCandidates.length === 0) {
     throw new Error(`No Apple Music songs matched: ${params.description}`);
   }

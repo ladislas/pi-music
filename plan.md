@@ -229,7 +229,7 @@ Expected outcome:
 ### Prompt structure / balancing
 - [x] Parse prompt into facets more explicitly
 - [x] Score candidates per facet
-- [ ] Add slot allocation across facets
+- [x] Add slot allocation across facets
 - [ ] Ensure final playlist covers all major requested facets
 
 ### History
