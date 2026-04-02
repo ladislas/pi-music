@@ -93,6 +93,9 @@ type PlaylistPlannerSuggestion = {
   moods?: string[];
   avoidTerms?: string[];
   notes?: string[];
+  optionalDirections?: string[];
+  clarifyingQuestions?: string[];
+  familiarArtists?: string[];
   discoveryIntent?: boolean;
   starterIntent?: boolean;
   broadRequest?: boolean;
@@ -108,6 +111,9 @@ type PlaylistPlan = {
   seedArtists: string[];
   relatedArtists: string[];
   avoidTerms: string[];
+  optionalDirections: string[];
+  clarifyingQuestions: string[];
+  familiarArtists: string[];
   discoveryIntent: boolean;
   starterIntent: boolean;
   broadRequest: boolean;
@@ -318,6 +324,10 @@ function songLabel(song: AppleMusicSong): string {
   return `${name} — ${artist}`;
 }
 
+function formatBulletList(values: string[], prefix = "- "): string {
+  return values.map((value) => `${prefix}${value}`).join("\n");
+}
+
 function splitPromptSegments(description: string): string[] {
   return unique(
     description
@@ -394,6 +404,9 @@ Output JSON shape:
   "moods": string[],
   "avoidTerms": string[],
   "notes": string[],
+  "optionalDirections": string[],
+  "clarifyingQuestions": string[],
+  "familiarArtists": string[],
   "discoveryIntent": boolean,
   "starterIntent": boolean,
   "broadRequest": boolean
@@ -407,12 +420,15 @@ Rules:
 - Keep arrays short and useful.
 - Queries should be good Apple Music search queries, including blended region + style queries when relevant.
 - If the request is nuanced, infer adjacent genres that help curation.
+- optionalDirections should capture legitimate alternate interpretations worth asking the user about.
+- clarifyingQuestions should be low-friction multiple-choice style questions the user can answer quickly.
+- familiarArtists should include obvious canonical artists that some users may want excluded for discovery.
 
 Example 1 request: Chinese and Japanese lo-fi electronic music to study, concentrate and code; asian sounds, vocals okay
-Example 1 output: {"inferredGenres":["Japanese Ambient","Chinese Electronic","Downtempo","Lo-Fi Beats"],"facets":["japanese","chinese","east asian","lo-fi electronic","study focus","soft vocals"],"queries":["japanese lo-fi electronic","chinese ambient electronic","east asian downtempo vocals","nujabes style japanese lo-fi","mandarin downtempo electronic"],"seedArtists":["Nujabes","Hiroshi Yoshimura","Susumu Yokota","Howie Lee","33EMYBW"],"relatedArtists":["Ryuichi Sakamoto","Haruomi Hosono","The Shanghai Restoration Project","Cornelius"],"moods":["focused","calm","textured"],"avoidTerms":["brain stimulation","432 hz","binaural"],"notes":["allow subtle vocals"],"discoveryIntent":false,"starterIntent":false,"broadRequest":true}
+Example 1 output: {"inferredGenres":["Japanese Ambient","Chinese Electronic","Downtempo","Lo-Fi Beats"],"facets":["japanese","chinese","east asian","lo-fi electronic","study focus","soft vocals"],"queries":["japanese lo-fi electronic","chinese ambient electronic","east asian downtempo vocals","nujabes style japanese lo-fi","mandarin downtempo electronic"],"seedArtists":["Nujabes","Hiroshi Yoshimura","Susumu Yokota","Howie Lee","33EMYBW"],"relatedArtists":["Ryuichi Sakamoto","Haruomi Hosono","The Shanghai Restoration Project","Cornelius"],"moods":["focused","calm","textured"],"avoidTerms":["brain stimulation","432 hz","binaural"],"notes":["allow subtle vocals"],"optionalDirections":["more beat-driven lo-fi hip-hop","more ambient and textural","more traditional asian instrumental color"],"clarifyingQuestions":["Should I keep this mostly instrumental, or include more soft vocals?","Do you want more Japanese than Chinese, or a balanced mix?","Should I lean more beat-driven or more ambient?"],"familiarArtists":["Nujabes"],"discoveryIntent":false,"starterIntent":false,"broadRequest":true}
 
 Example 2 request: ambient electronic from Icelandic and Northern European countries, with vocals
-Example 2 output: {"inferredGenres":["Ambient","Dream Pop","Nordic Electronica"],"facets":["icelandic","nordic","northern european","ambient electronic","vocals"],"queries":["icelandic ambient electronic vocals","nordic dream pop electronic","scandinavian ambient pop","iceland electronic vocal"],"seedArtists":["Björk","múm","GusGus","The Knife","Röyksopp","Susanne Sundfør"],"relatedArtists":["Fever Ray","Efterklang","Karin Park","Ólafur Arnalds"],"moods":["ethereal","cold","immersive"],"avoidTerms":["meditation music","sleep sounds"],"notes":["prefer soft or art-pop vocals"],"discoveryIntent":false,"starterIntent":false,"broadRequest":true}`;
+Example 2 output: {"inferredGenres":["Ambient","Dream Pop","Nordic Electronica"],"facets":["icelandic","nordic","northern european","ambient electronic","vocals"],"queries":["icelandic ambient electronic vocals","nordic dream pop electronic","scandinavian ambient pop","iceland electronic vocal"],"seedArtists":["Björk","múm","GusGus","The Knife","Röyksopp","Susanne Sundfør"],"relatedArtists":["Fever Ray","Efterklang","Karin Park","Ólafur Arnalds"],"moods":["ethereal","cold","immersive"],"avoidTerms":["meditation music","sleep sounds"],"notes":["prefer soft or art-pop vocals"],"optionalDirections":["include softer spa-adjacent nordic ambient textures","lean into art-pop / canonical nordic names","favor lesser-known discovery picks over familiar staples"],"clarifyingQuestions":["Should I include spa or thunderstorm-adjacent ambient tracks if they fit the mood?","Do you want to avoid obvious artists like Björk or Röyksopp?","Should vocals be ethereal/sparse or more song-forward?"],"familiarArtists":["Björk","Röyksopp","Fever Ray"],"discoveryIntent":false,"starterIntent":false,"broadRequest":true}`;
 
   const userPrompt = JSON.stringify(
     {
@@ -460,6 +476,9 @@ Example 2 output: {"inferredGenres":["Ambient","Dream Pop","Nordic Electronica"]
     moods: asStringArray(json.moods, 8),
     avoidTerms: asStringArray(json.avoidTerms, 10),
     notes: asStringArray(json.notes, 6),
+    optionalDirections: asStringArray(json.optionalDirections, 6),
+    clarifyingQuestions: asStringArray(json.clarifyingQuestions, 4),
+    familiarArtists: asStringArray(json.familiarArtists, 8),
     discoveryIntent: typeof json.discoveryIntent === "boolean" ? json.discoveryIntent : undefined,
     starterIntent: typeof json.starterIntent === "boolean" ? json.starterIntent : undefined,
     broadRequest: typeof json.broadRequest === "boolean" ? json.broadRequest : undefined,
@@ -478,6 +497,9 @@ function mergePlaylistPlan(basePlan: PlaylistPlan, suggestion?: PlaylistPlannerS
     relatedArtists: unique([...(suggestion.relatedArtists ?? []), ...basePlan.relatedArtists]).slice(0, 16),
     moods: unique([...(suggestion.moods ?? []), ...basePlan.moods]).slice(0, 10),
     avoidTerms: unique([...(suggestion.avoidTerms ?? []), ...basePlan.avoidTerms]).map(normalizeText).filter(Boolean).slice(0, 16),
+    optionalDirections: unique([...(suggestion.optionalDirections ?? []), ...basePlan.optionalDirections]).slice(0, 6),
+    clarifyingQuestions: unique([...(suggestion.clarifyingQuestions ?? []), ...basePlan.clarifyingQuestions]).slice(0, 4),
+    familiarArtists: unique([...(suggestion.familiarArtists ?? []), ...basePlan.familiarArtists]).slice(0, 8),
     notes: unique([...(suggestion.notes ?? []), ...basePlan.notes, "LLM-assisted plan"]).slice(0, 6),
     discoveryIntent: suggestion.discoveryIntent ?? basePlan.discoveryIntent,
     starterIntent: suggestion.starterIntent ?? basePlan.starterIntent,
@@ -557,6 +579,9 @@ async function buildPlaylistPlan(description: string, runtime?: PlannerRuntime):
     seedArtists,
     relatedArtists,
     avoidTerms,
+    optionalDirections: [],
+    clarifyingQuestions: [],
+    familiarArtists: [],
     discoveryIntent,
     starterIntent,
     broadRequest,
@@ -1303,6 +1328,7 @@ async function previewCuratedPlaylist(
   const { plan, trackCount, selected, selectedCandidates, playlistName } = previewData;
   const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, trackCount);
   const preview = selected.map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
+  const highConfidencePreview = selected.slice(0, 10).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
   const planSummary = [
     `Proposed playlist: \"${playlistName}\"`,
     `Tracks: ${trackCount}`,
@@ -1314,11 +1340,23 @@ async function previewCuratedPlaylist(
     .filter(Boolean)
     .join("\n");
 
+  const collaborativeSections = [
+    plan.optionalDirections.length > 0 ? `Possible directions I found:\n${formatBulletList(plan.optionalDirections.slice(0, 3))}` : "",
+    plan.familiarArtists.length > 0 ? `Familiar / canonical artists you may want less of:\n${formatBulletList(plan.familiarArtists.slice(0, 5))}` : "",
+    plan.clarifyingQuestions.length > 0 ? `Quick questions before we lock it in:\n${formatBulletList(plan.clarifyingQuestions.slice(0, 3))}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
   return {
     content: [
       {
         type: "text",
-        text: `${planSummary}\n\nTracklist:\n${preview}\n\nReply with create/confirm to make it in Apple Music, or ask to regenerate/change the name/count.`,
+        text:
+          `${planSummary}\n\nHigh-confidence picks:\n${highConfidencePreview}` +
+          `${collaborativeSections ? `\n\n${collaborativeSections}` : ""}` +
+          `\n\nFull tracklist:\n${preview}` +
+          `\n\nReply with create/confirm to make it in Apple Music, or tell me how to refine it (for example: more spa, less famous artists, more vocals, more discovery, less Björk).`,
       },
     ],
     details: {
