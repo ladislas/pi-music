@@ -1536,7 +1536,8 @@ async function buildCuratedPlaylistPreview(
     throw new Error(`No Apple Music songs matched: ${params.description}`);
   }
 
-  const trackCount = clamp(Math.round(params.trackCount ?? (plan.discographyIntent ? 100 : 25)), 5, 100);
+  const requestedTrackCount = Math.round(params.trackCount ?? (plan.discographyIntent ? candidates.length : 25));
+  const trackCount = Math.max(5, requestedTrackCount);
   const selectionSeed = params.selectionSeed ?? `${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`;
   const selectionSeedKey = `${params.description}::${params.playlistName ?? ""}::${trackCount}::${selectionSeed}`;
   const selectedCandidates = selectPlaylistSongs(candidates, trackCount, selectionSeedKey, plan);
@@ -1568,23 +1569,39 @@ async function previewCuratedPlaylist(
   PREVIEW_PROPOSAL_CACHE.set(buildPreviewCacheKey(params), previewData);
   const { plan, trackCount, selected, selectedCandidates, playlistName } = previewData;
   const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, trackCount);
-  const preview = selected.map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
+  const previewDisplayCount = Math.min(25, selected.length);
+  const preview = selected.slice(0, previewDisplayCount).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
   const highConfidencePreview = selected.slice(0, 10).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
+  const collaborationCount = plan.targetArtist
+    ? selectedCandidates.filter((candidate) => normalizeText(candidate.song.attributes?.artistName ?? "") !== normalizeText(plan.targetArtist ?? "")).length
+    : 0;
   const planSummary = [
     `Proposed playlist: \"${playlistName}\"`,
     `Tracks: ${trackCount}`,
+    plan.discographyIntent && selected.length > previewDisplayCount ? `Showing first ${previewDisplayCount} of ${selected.length} tracks below` : "",
     plan.inferredGenres.length > 0 ? `Genres: ${plan.inferredGenres.join(", ")}` : "",
     plan.facets.length > 1 ? `Facets: ${plan.facets.slice(0, 5).join(", ")}` : "",
     plan.seedArtists.length > 0 ? `Seed artists: ${plan.seedArtists.slice(0, 6).join(", ")}` : "",
+    plan.discographyIntent && plan.targetArtist ? `Discography mode: ${plan.strictArtistOnly ? "primary-artist tracks only" : `includes collaborations/features by default (${collaborationCount} in current selection)`}` : "",
     plan.discoveryIntent || plan.starterIntent ? "Mode: discovery / starter" : "",
   ]
     .filter(Boolean)
     .join("\n");
 
+  const discographyQuestions = plan.discographyIntent
+    ? [
+        !plan.strictArtistOnly ? "Keep collaborations/features included, or switch to primary-artist tracks only?" : "Do you also want collaborations/features included?",
+        "Include live/acoustic/alternate/remix versions if available?",
+        "Sort chronologically or group by album?",
+      ]
+    : [];
+
   const collaborativeSections = [
+    plan.clarifyingQuestions.length > 0 || discographyQuestions.length > 0
+      ? `Quick questions before we lock it in:\n${formatBulletList((plan.discographyIntent ? discographyQuestions : plan.clarifyingQuestions).slice(0, 3))}`
+      : "",
     plan.optionalDirections.length > 0 ? `Possible directions I found:\n${formatBulletList(plan.optionalDirections.slice(0, 3))}` : "",
-    plan.familiarArtists.length > 0 ? `Familiar / canonical artists you may want less of:\n${formatBulletList(plan.familiarArtists.slice(0, 5))}` : "",
-    plan.clarifyingQuestions.length > 0 ? `Quick questions before we lock it in:\n${formatBulletList(plan.clarifyingQuestions.slice(0, 3))}` : "",
+    plan.familiarArtists.length > 0 && !plan.discographyIntent ? `Familiar / canonical artists you may want less of:\n${formatBulletList(plan.familiarArtists.slice(0, 5))}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -1594,9 +1611,10 @@ async function previewCuratedPlaylist(
       {
         type: "text",
         text:
-          `${planSummary}\n\nHigh-confidence picks:\n${highConfidencePreview}` +
+          `${planSummary}` +
           `${collaborativeSections ? `\n\n${collaborativeSections}` : ""}` +
-          `\n\nFull tracklist:\n${preview}` +
+          `\n\nHigh-confidence picks:\n${highConfidencePreview}` +
+          `\n\n${plan.discographyIntent ? `Tracklist sample (first ${previewDisplayCount}):` : "Full tracklist:"}\n${preview}` +
           `\n\nReply with create/confirm to make it in Apple Music, or tell me how to refine it (for example: more spa, less famous artists, more vocals, more discovery, less Björk).`,
       },
     ],
@@ -1723,7 +1741,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
     parameters: Type.Object({
       description: Type.String({ description: "Natural-language playlist brief, e.g. tropical house, deep house, jazzy soulful tunes" }),
       playlistName: Type.Optional(Type.String({ description: "Optional proposed playlist name" })),
-      trackCount: Type.Optional(Type.Number({ minimum: 5, maximum: 100, description: "How many tracks to include in the preview. Defaults to 25." })),
+      trackCount: Type.Optional(Type.Number({ minimum: 5, description: "How many tracks to include in the preview. Defaults to 25, or all tracks for discography requests." })),
       selectionSeed: Type.Optional(Type.String({ description: "Optional seed to reproduce a prior preview exactly." })),
     }),
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
@@ -1749,7 +1767,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
     parameters: Type.Object({
       description: Type.String({ description: "Natural-language playlist brief, e.g. tropical house, deep house, jazzy soulful tunes" }),
       playlistName: Type.Optional(Type.String({ description: "Optional explicit playlist name" })),
-      trackCount: Type.Optional(Type.Number({ minimum: 5, maximum: 100, description: "How many tracks to include. Defaults to 25." })),
+      trackCount: Type.Optional(Type.Number({ minimum: 5, description: "How many tracks to include. Defaults to 25, or all tracks for discography requests." })),
       startPlaying: Type.Optional(Type.Boolean({ description: "If true, try to start playing the playlist locally after creating it." })),
       selectionSeed: Type.Optional(Type.String({ description: "Optional seed from a reviewed preview to recreate the exact same tracklist." })),
     }),
