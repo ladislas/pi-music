@@ -1,169 +1,41 @@
-import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
 import { complete, StringEnum, type UserMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
+import { ensureApiConfig, loadConfig, buildStoredPlaylistDescription, writeProposalFile, updateProposalFile, loadProposal, summarizeSkippedTracks, candidateToSerializable } from "./config.js";
 import { GENRE_SEED_MAP, type SeedGenreEntry } from "./genre-seeds.js";
-
-type AppleMusicConfig = {
-  developerToken?: string;
-  musicUserToken?: string;
-  storefront?: string;
-  plannerModel?: string;
-};
-
-type AppleMusicSong = {
-  id: string;
-  type: string;
-  attributes?: {
-    name?: string;
-    artistName?: string;
-    albumName?: string;
-    genreNames?: string[];
-    url?: string;
-  };
-};
-
-type AppleMusicArtist = {
-  id: string;
-  type: string;
-  attributes?: {
-    name?: string;
-    genreNames?: string[];
-    editorialNotes?: { standard?: string; short?: string };
-  };
-};
-
-type AppleMusicAlbum = {
-  id: string;
-  type: string;
-  attributes?: {
-    name?: string;
-    artistName?: string;
-    genreNames?: string[];
-    editorialNotes?: { standard?: string; short?: string };
-  };
-};
-
-type AppleMusicPlaylist = {
-  id: string;
-  type: string;
-  attributes?: {
-    name?: string;
-    curatorName?: string;
-    description?: { standard?: string; short?: string };
-    editorialNotes?: { standard?: string; short?: string };
-    playlistType?: string;
-  };
-};
-
-type SearchResponse = {
-  results?: {
-    songs?: { data?: AppleMusicSong[] };
-    artists?: { data?: AppleMusicArtist[] };
-    albums?: { data?: AppleMusicAlbum[] };
-    playlists?: { data?: AppleMusicPlaylist[] };
-  };
-};
-
-type TracksResponse = {
-  data?: AppleMusicSong[];
-};
-
-type CreatePlaylistResponse = {
-  data?: Array<{
-    id: string;
-    type: string;
-    attributes?: {
-      name?: string;
-      description?: { standard?: string };
-    };
-  }>;
-};
-
-type LibraryPlaylistFolder = {
-  id: string;
-  type: string;
-  attributes?: {
-    name?: string;
-    description?: { standard?: string; short?: string };
-  };
-};
-
-type LibraryPlaylistFoldersResponse = {
-  data?: LibraryPlaylistFolder[];
-  next?: string;
-};
-
-type PlaylistPlannerSuggestion = {
-  inferredGenres?: string[];
-  facets?: string[];
-  queries?: string[];
-  seedArtists?: string[];
-  relatedArtists?: string[];
-  moods?: string[];
-  avoidTerms?: string[];
-  notes?: string[];
-  optionalDirections?: string[];
-  clarifyingQuestions?: string[];
-  familiarArtists?: string[];
-  discoveryIntent?: boolean;
-  starterIntent?: boolean;
-  broadRequest?: boolean;
-};
-
-type PlaylistPlan = {
-  originalDescription: string;
-  normalizedDescription: string;
-  inferredGenres: string[];
-  matchedSeedEntries: SeedGenreEntry[];
-  facets: string[];
-  queries: string[];
-  seedArtists: string[];
-  relatedArtists: string[];
-  avoidTerms: string[];
-  optionalDirections: string[];
-  clarifyingQuestions: string[];
-  familiarArtists: string[];
-  discographyIntent: boolean;
-  strictArtistOnly: boolean;
-  targetArtist?: string;
-  discoveryIntent: boolean;
-  starterIntent: boolean;
-  broadRequest: boolean;
-  moods: string[];
-  notes: string[];
-};
-
-type CandidateSong = {
-  song: AppleMusicSong;
-  directSongHits: number;
-  artistTopSongHits: number;
-  albumTrackHits: number;
-  playlistTrackHits: number;
-  editorialAlbumHits: number;
-  editorialPlaylistHits: number;
-  seedArtistHits: number;
-  relatedArtistHits: number;
-  queryMatches: Set<string>;
-  genresMatched: Set<string>;
-  facetMatches: Set<string>;
-  reasons: Set<string>;
-  sourceReleaseName?: string;
-  sourceReleaseType?: "album" | "ep" | "single" | "other";
-  score: number;
-};
-
-type PlannerRuntime = {
-  model?: any;
-  modelRegistry?: any;
-  plannerModel?: string;
-  cwd?: string;
-};
+import type {
+  AppleMusicAlbum,
+  AppleMusicArtist,
+  AppleMusicConfig,
+  AppleMusicPlaylist,
+  AppleMusicSong,
+  CandidateSong,
+  CreatePlaylistResponse,
+  LibraryPlaylistFolder,
+  LibraryPlaylistFoldersResponse,
+  PlannerRuntime,
+  PlaylistPlan,
+  PlaylistPlannerSuggestion,
+  SearchResponse,
+  TracksResponse,
+} from "./types.js";
+import {
+  STARTER_PATTERNS,
+  DISCOVERY_PATTERNS,
+  appendAssistantTextMessage,
+  clamp,
+  containsNormalizedPhrase,
+  derivePlaylistName,
+  formatBulletList,
+  hasPattern,
+  isMacOS,
+  normalizeText,
+  songLabel,
+  splitPromptSegments,
+  tokenize,
+  unique,
+} from "./utils.js";
 
 const APPLE_MUSIC_FOLDER_NAME = "piMusic";
 const APPLE_MUSIC_MOVE_INITIAL_DELAY_MS = 10_000;
@@ -190,104 +62,6 @@ const TRANSPORT_ACTIONS = [
   "status",
 ] as const;
 
-const STOP_WORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "apple",
-  "are",
-  "based",
-  "best",
-  "create",
-  "for",
-  "get",
-  "great",
-  "i",
-  "in",
-  "into",
-  "it",
-  "like",
-  "me",
-  "mix",
-  "music",
-  "my",
-  "of",
-  "on",
-  "playlist",
-  "please",
-  "playlists",
-  "recent",
-  "some",
-  "songs",
-  "start",
-  "starter",
-  "that",
-  "the",
-  "these",
-  "to",
-  "track",
-  "tracks",
-  "tunes",
-  "want",
-  "with",
-]);
-
-const DISCOVERY_PATTERNS = [/\bget into\b/i, /\bwhere should i start\b/i, /\bdive into\b/i, /\bnew to\b/i, /\bbeginner\b/i];
-const STARTER_PATTERNS = [/\bstarter\b/i, /\bessentials\b/i, /\bintro\b/i, /\bintroduction\b/i, /\bentry point\b/i];
-
-function isMacOS(): boolean {
-  return process.platform === "darwin";
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-async function readJsonIfExists(path: string): Promise<Record<string, unknown> | undefined> {
-  if (!existsSync(path)) return undefined;
-  const text = await readFile(path, "utf8");
-  return JSON.parse(text) as Record<string, unknown>;
-}
-
-async function loadConfig(cwd: string): Promise<AppleMusicConfig> {
-  const projectPath = join(cwd, ".pi", "apple-music.json");
-  const userPath = join(homedir(), ".pi", "agent", "apple-music.json");
-
-  const [userConfig, projectConfig] = await Promise.all([readJsonIfExists(userPath), readJsonIfExists(projectPath)]);
-
-  return {
-    developerToken:
-      process.env.APPLE_MUSIC_DEVELOPER_TOKEN ??
-      (projectConfig?.developerToken as string | undefined) ??
-      (userConfig?.developerToken as string | undefined),
-    musicUserToken:
-      process.env.APPLE_MUSIC_USER_TOKEN ??
-      (projectConfig?.musicUserToken as string | undefined) ??
-      (userConfig?.musicUserToken as string | undefined),
-    storefront:
-      process.env.APPLE_MUSIC_STOREFRONT ??
-      (projectConfig?.storefront as string | undefined) ??
-      (userConfig?.storefront as string | undefined) ??
-      "us",
-    plannerModel:
-      process.env.APPLE_MUSIC_PLANNER_MODEL ??
-      (projectConfig?.plannerModel as string | undefined) ??
-      (userConfig?.plannerModel as string | undefined),
-  };
-}
-
-function ensureApiConfig(config: AppleMusicConfig): asserts config is Required<AppleMusicConfig> {
-  if (!config.developerToken) {
-    throw new Error("Missing Apple Music developer token. Set APPLE_MUSIC_DEVELOPER_TOKEN or .pi/apple-music.json.");
-  }
-  if (!config.musicUserToken) {
-    throw new Error("Missing Apple Music user token. Set APPLE_MUSIC_USER_TOKEN or .pi/apple-music.json.");
-  }
-  if (!config.storefront) {
-    throw new Error("Missing Apple Music storefront. Set APPLE_MUSIC_STOREFRONT or .pi/apple-music.json.");
-  }
-}
-
 async function appleMusicRequest<T>(path: string, config: Required<AppleMusicConfig>, init?: RequestInit): Promise<T> {
   const response = await fetch(`https://api.music.apple.com${path}`, {
     ...init,
@@ -310,194 +84,6 @@ async function appleMusicRequest<T>(path: string, config: Required<AppleMusicCon
   }
 
   return JSON.parse(body) as T;
-}
-
-function normalizeText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9\s,/'&+-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function tokenize(value: string): string[] {
-  return normalizeText(value)
-    .split(/[\s,/'&+-]+/)
-    .map((token) => token.trim())
-    .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
-}
-
-function unique<T>(values: T[]): T[] {
-  return [...new Set(values)];
-}
-
-function derivePlaylistName(description: string): string {
-  const base = description
-    .replace(/^i\s+want\s+/i, "")
-    .replace(/^create\s+/i, "")
-    .replace(/^make\s+/i, "")
-    .replace(/^a\s+playlist\s+/i, "")
-    .replace(/^an\s+apple\s+music\s+playlist\s+/i, "")
-    .trim();
-
-  const words = base.split(/\s+/).filter(Boolean).slice(0, 6);
-  const title = words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
-  return title || "Pi Playlist";
-}
-
-function compactText(value: string, maxLength: number): string {
-  return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
-}
-
-function buildStoredPlaylistDescription(originalPrompt: string, plan: PlaylistPlan, selectionSeed?: string): string {
-  const refinements = unique(
-    [
-      plan.facets.length > 0 ? `facets=${plan.facets.slice(0, 5).join(", ")}` : "",
-      plan.moods.length > 0 ? `moods=${plan.moods.slice(0, 4).join(", ")}` : "",
-      ...plan.notes.filter((note) => note !== "LLM-assisted plan").slice(0, 2),
-      plan.optionalDirections.length > 0 ? `directions=${plan.optionalDirections.slice(0, 2).join(" | ")}` : "",
-      plan.discoveryIntent || plan.starterIntent ? "mode=discovery/starter" : "",
-    ].filter(Boolean),
-  ).slice(0, 5);
-
-  const lines = [
-    `Prompt: ${compactText(originalPrompt, 220)}`,
-    `Refinements: ${refinements.length > 0 ? refinements.join("; ") : "none"}`,
-    selectionSeed ? `Selection seed: ${selectionSeed}` : "",
-  ].filter(Boolean);
-
-  return compactText(lines.join("\n"), 500);
-}
-
-function songLabel(song: AppleMusicSong): string {
-  const name = song.attributes?.name ?? "Unknown title";
-  const artist = song.attributes?.artistName ?? "Unknown artist";
-  return `${name} — ${artist}`;
-}
-
-function formatBulletList(values: string[], prefix = "- "): string {
-  return values.map((value) => `${prefix}${value}`).join("\n");
-}
-
-function slugify(value: string): string {
-  return normalizeText(value).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "playlist";
-}
-
-function proposalDirectory(cwd: string): string {
-  return join(cwd, ".pi", "apple-music-proposals");
-}
-
-function candidateToSerializable(candidate: CandidateSong) {
-  return {
-    id: candidate.song.id,
-    name: candidate.song.attributes?.name,
-    artistName: candidate.song.attributes?.artistName,
-    albumName: candidate.song.attributes?.albumName,
-    sourceReleaseName: candidate.sourceReleaseName,
-    sourceReleaseType: candidate.sourceReleaseType,
-    genreNames: candidate.song.attributes?.genreNames,
-    url: candidate.song.attributes?.url,
-    score: candidate.score,
-    reasons: [...candidate.reasons, ...summarizeCandidateSignals(candidate)].slice(0, 8),
-  };
-}
-
-async function writeProposalFile(
-  cwd: string,
-  data: Record<string, unknown>,
-  proposalId?: string,
-): Promise<{ proposalId: string; proposalPath: string }> {
-  const dir = proposalDirectory(cwd);
-  await mkdir(dir, { recursive: true });
-  const resolvedProposalId = proposalId ?? `${Date.now()}-${slugify(String(data.playlistName ?? data.description ?? "proposal"))}`;
-  const proposalPath = join(dir, `${resolvedProposalId}.json`);
-  await writeFile(proposalPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  return { proposalId: resolvedProposalId, proposalPath };
-}
-
-async function updateProposalFile(proposalPath: string, patch: Record<string, unknown>): Promise<void> {
-  const current = JSON.parse(await readFile(proposalPath, "utf8")) as Record<string, unknown>;
-  await writeFile(proposalPath, `${JSON.stringify({ ...current, ...patch }, null, 2)}\n`, "utf8");
-}
-
-async function resolveProposalPath(cwd: string, proposalRef?: string): Promise<string | undefined> {
-  const dir = proposalDirectory(cwd);
-  try {
-    const entries = (await readdir(dir)).filter((name) => name.endsWith(".json")).sort();
-    if (entries.length === 0) return undefined;
-    if (!proposalRef || proposalRef === "last") {
-      return join(dir, entries[entries.length - 1]);
-    }
-    if (proposalRef.endsWith(".json")) return join(dir, proposalRef);
-    const exact = entries.find((name) => name === `${proposalRef}.json` || name.includes(proposalRef));
-    return exact ? join(dir, exact) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function loadProposal(cwd: string, proposalRef?: string): Promise<{ path: string; data: any } | undefined> {
-  const path = await resolveProposalPath(cwd, proposalRef);
-  if (!path) return undefined;
-  return { path, data: JSON.parse(await readFile(path, "utf8")) };
-}
-
-function summarizeSkippedTracks(proposal: any, maxItems = 20): string {
-  const skippedTracks = Array.isArray(proposal.skippedTracks) ? proposal.skippedTracks : [];
-  if (skippedTracks.length === 0) return "No skipped tracks recorded.";
-
-  const byReason = new Map<string, any[]>();
-  for (const track of skippedTracks) {
-    const reason = String(track.skipReason ?? "unknown");
-    const list = byReason.get(reason) ?? [];
-    list.push(track);
-    byReason.set(reason, list);
-  }
-
-  const sections: string[] = [];
-  let shown = 0;
-  for (const [reason, tracks] of byReason.entries()) {
-    if (shown >= maxItems) break;
-    const remaining = maxItems - shown;
-    const sample = tracks.slice(0, remaining).map((track: any) => `- ${track.name ?? "Unknown title"} — ${track.artistName ?? "Unknown artist"}${track.sourceReleaseName ? ` [${track.sourceReleaseName}]` : ""}`);
-    sections.push(`${reason} (${tracks.length})\n${sample.join("\n")}`);
-    shown += sample.length;
-  }
-
-  return sections.join("\n\n");
-}
-
-function assistantTextContent(text: string) {
-  return [{ type: "text", text }] as Array<{ type: "text"; text: string }>;
-}
-
-function appendAssistantTextMessage(pi: ExtensionAPI, _ctx: any, text: string): void {
-  pi.sendMessage({
-    customType: "apple-music-result",
-    content: text,
-    display: true,
-    details: { timestamp: Date.now() },
-  });
-}
-
-function splitPromptSegments(description: string): string[] {
-  return unique(
-    description
-      .split(/[,;]+/)
-      .map((part) => part.trim())
-      .filter((part) => normalizeText(part).length >= 3),
-  );
-}
-
-function containsNormalizedPhrase(text: string, phrase: string): boolean {
-  const normalizedText = ` ${normalizeText(text)} `;
-  const normalizedPhrase = normalizeText(phrase);
-  if (!normalizedPhrase) return false;
-  return normalizedText.includes(` ${normalizedPhrase} `);
-}
-
-function hasPattern(patterns: RegExp[], value: string): boolean {
-  return patterns.some((pattern) => pattern.test(value));
 }
 
 function detectDiscographyIntent(description: string): { discographyIntent: boolean; strictArtistOnly: boolean; targetArtist?: string } {
