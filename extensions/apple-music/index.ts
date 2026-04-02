@@ -388,7 +388,21 @@ async function appendAssistantTextMessage(ctx: any, text: string): Promise<void>
     api: model?.api ?? "extension",
     provider: model?.provider ?? "extension",
     model: model?.id ?? "apple-music",
-    usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, reasoningTokens: 0, totalCost: 0 },
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      reasoningTokens: 0,
+      cost: {
+        input: 0,
+        output: 0,
+        cacheCreation: 0,
+        cacheRead: 0,
+        reasoning: 0,
+        total: 0,
+      },
+    },
     stopReason: "stop",
     timestamp: Date.now(),
   });
