@@ -119,6 +119,7 @@ const APPLE_MUSIC_FOLDER_NAME = "piMusic";
 const APPLE_MUSIC_MOVE_INITIAL_DELAY_MS = 10_000;
 const APPLE_MUSIC_MOVE_RETRY_DELAY_MS = 2_500;
 const APPLE_MUSIC_MOVE_ATTEMPTS = 4;
+const PREVIEW_PROPOSAL_CACHE = new Map<string, Awaited<ReturnType<typeof buildCuratedPlaylistPreview>>>();
 
 const TRANSPORT_ACTIONS = [
   "play",
@@ -477,18 +478,135 @@ function scoreCandidate(songCandidate: CandidateSong, plan: PlaylistPlan): numbe
   return score;
 }
 
-function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number): CandidateSong[] {
-  const maxPerArtist = trackCount >= 30 ? 3 : 2;
-  const artistCounts = new Map<string, number>();
-  const selected: CandidateSong[] = [];
+function hashSeed(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function createSeededRng(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
+function shuffleWithRng<T>(values: T[], rng: () => number): T[] {
+  const copy = [...values];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(rng() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
+}
+
+function shuffleWithinScoreBands(candidates: CandidateSong[], rng: () => number, bandSize = 6): CandidateSong[] {
+  const bands: CandidateSong[][] = [];
 
   for (const candidate of candidates) {
-    const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
-    const count = artistCounts.get(artist) ?? 0;
-    if (count >= maxPerArtist) continue;
+    const band = bands[bands.length - 1];
+    if (!band || band[0].score - candidate.score > bandSize) {
+      bands.push([candidate]);
+      continue;
+    }
+    band.push(candidate);
+  }
+
+  return bands.flatMap((band) => shuffleWithRng(band, rng));
+}
+
+function candidatePrimaryGenre(candidate: CandidateSong): string {
+  return normalizeText(candidate.song.attributes?.genreNames?.[0] ?? "");
+}
+
+function canSelectCandidate(
+  candidate: CandidateSong,
+  selected: CandidateSong[],
+  artistCounts: Map<string, number>,
+  albumCounts: Map<string, number>,
+  maxPerArtist: number,
+  maxPerAlbum: number,
+  enforceSequentialGenreDiversity: boolean,
+): boolean {
+  const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
+  const album = candidate.song.attributes?.albumName ?? "Unknown album";
+  if ((artistCounts.get(artist) ?? 0) >= maxPerArtist) return false;
+  if ((albumCounts.get(album) ?? 0) >= maxPerAlbum) return false;
+
+  if (enforceSequentialGenreDiversity && selected.length > 0) {
+    const previousGenre = candidatePrimaryGenre(selected[selected.length - 1]);
+    const currentGenre = candidatePrimaryGenre(candidate);
+    if (previousGenre && currentGenre && previousGenre === currentGenre) return false;
+  }
+
+  return true;
+}
+
+function weightedPickIndex(candidates: CandidateSong[], rng: () => number): number {
+  const floor = Math.min(...candidates.map((candidate) => candidate.score));
+  const totalWeight = candidates.reduce((sum, candidate) => sum + Math.max(1, candidate.score - floor + 1), 0);
+  let target = rng() * totalWeight;
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    target -= Math.max(1, candidates[index].score - floor + 1);
+    if (target <= 0) return index;
+  }
+
+  return candidates.length - 1;
+}
+
+function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, seedKey: string): CandidateSong[] {
+  const maxPerArtist = trackCount <= 15 ? 1 : trackCount >= 30 ? 3 : 2;
+  const maxPerAlbum = trackCount <= 20 ? 1 : 2;
+  const rng = createSeededRng(hashSeed(seedKey));
+  const ranked = shuffleWithinScoreBands(candidates, rng);
+  const initialPoolSize = clamp(Math.max(trackCount * 3, 30), trackCount, ranked.length);
+  const selected: CandidateSong[] = [];
+  const artistCounts = new Map<string, number>();
+  const albumCounts = new Map<string, number>();
+  const available = [...ranked.slice(0, initialPoolSize)];
+  const fallback = [...ranked.slice(initialPoolSize)];
+
+  const takeCandidate = (candidate: CandidateSong) => {
     selected.push(candidate);
-    artistCounts.set(artist, count + 1);
-    if (selected.length >= trackCount) break;
+    const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
+    const album = candidate.song.attributes?.albumName ?? "Unknown album";
+    artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+    albumCounts.set(album, (albumCounts.get(album) ?? 0) + 1);
+  };
+
+  while (selected.length < trackCount && (available.length > 0 || fallback.length > 0)) {
+    if (available.length === 0 && fallback.length > 0) {
+      available.push(...fallback.splice(0, Math.max(5, trackCount - selected.length)));
+    }
+
+    let eligible = available.filter((candidate) =>
+      canSelectCandidate(candidate, selected, artistCounts, albumCounts, maxPerArtist, maxPerAlbum, true),
+    );
+    if (eligible.length === 0) {
+      eligible = available.filter((candidate) =>
+        canSelectCandidate(candidate, selected, artistCounts, albumCounts, maxPerArtist, maxPerAlbum, false),
+      );
+    }
+    if (eligible.length === 0) {
+      eligible = available.filter((candidate) => {
+        const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
+        return (artistCounts.get(artist) ?? 0) < maxPerArtist;
+      });
+    }
+    if (eligible.length === 0) {
+      eligible = [...available];
+    }
+    if (eligible.length === 0) break;
+
+    const picked = eligible[weightedPickIndex(eligible, rng)];
+    const pickedIndex = available.findIndex((candidate) => candidate.song.id === picked.song.id);
+    if (pickedIndex >= 0) available.splice(pickedIndex, 1);
+    takeCandidate(picked);
   }
 
   return selected;
@@ -802,9 +920,13 @@ async function transport(pi: ExtensionAPI, action: (typeof TRANSPORT_ACTIONS)[nu
   }
 }
 
+function buildPreviewCacheKey(params: { description: string; playlistName?: string; trackCount?: number }): string {
+  return `${normalizeText(params.description)}::${normalizeText(params.playlistName ?? "")}::${Math.round(params.trackCount ?? 25)}`;
+}
+
 async function buildCuratedPlaylistPreview(
   config: Required<AppleMusicConfig>,
-  params: { description: string; playlistName?: string; trackCount?: number },
+  params: { description: string; playlistName?: string; trackCount?: number; selectionSeed?: string },
 ) {
   const { plan, candidates } = await curateSongs(config, params.description);
   if (candidates.length === 0) {
@@ -812,7 +934,9 @@ async function buildCuratedPlaylistPreview(
   }
 
   const trackCount = clamp(Math.round(params.trackCount ?? 25), 5, 100);
-  const selectedCandidates = selectPlaylistSongs(candidates, trackCount);
+  const selectionSeed = params.selectionSeed ?? `${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`;
+  const selectionSeedKey = `${params.description}::${params.playlistName ?? ""}::${trackCount}::${selectionSeed}`;
+  const selectedCandidates = selectPlaylistSongs(candidates, trackCount, selectionSeedKey);
   if (selectedCandidates.length === 0) {
     throw new Error(`No Apple Music songs matched: ${params.description}`);
   }
@@ -828,14 +952,16 @@ async function buildCuratedPlaylistPreview(
     selected,
     playlistName,
     playlistDescription,
+    selectionSeed,
   };
 }
 
 async function previewCuratedPlaylist(
   config: Required<AppleMusicConfig>,
-  params: { description: string; playlistName?: string; trackCount?: number },
+  params: { description: string; playlistName?: string; trackCount?: number; selectionSeed?: string },
 ) {
   const previewData = await buildCuratedPlaylistPreview(config, params);
+  PREVIEW_PROPOSAL_CACHE.set(buildPreviewCacheKey(params), previewData);
   const { plan, trackCount, selected, selectedCandidates, playlistName } = previewData;
   const preview = selected.map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
   const planSummary = [
@@ -861,6 +987,7 @@ async function previewCuratedPlaylist(
       playlistFolder: APPLE_MUSIC_FOLDER_NAME,
       trackCount,
       plan,
+      selectionSeed: previewData.selectionSeed,
       songs: selectedCandidates.map((candidate) => ({
         id: candidate.song.id,
         name: candidate.song.attributes?.name,
@@ -878,9 +1005,11 @@ async function previewCuratedPlaylist(
 async function createCuratedPlaylist(
   pi: ExtensionAPI,
   config: Required<AppleMusicConfig>,
-  params: { description: string; playlistName?: string; trackCount?: number; startPlaying?: boolean },
+  params: { description: string; playlistName?: string; trackCount?: number; startPlaying?: boolean; selectionSeed?: string },
 ) {
-  const previewData = await buildCuratedPlaylistPreview(config, params);
+  const previewData = params.selectionSeed
+    ? await buildCuratedPlaylistPreview(config, params)
+    : (PREVIEW_PROPOSAL_CACHE.get(buildPreviewCacheKey(params)) ?? (await buildCuratedPlaylistPreview(config, params)));
   const { plan, selectedCandidates, selected, playlistName, playlistDescription } = previewData;
 
   if (isMacOS()) {
@@ -928,6 +1057,7 @@ async function createCuratedPlaylist(
       playlistFolder: APPLE_MUSIC_FOLDER_NAME,
       movedToFolder,
       plan,
+      selectionSeed: previewData.selectionSeed,
       songs: selectedCandidates.map((candidate) => ({
         id: candidate.song.id,
         name: candidate.song.attributes?.name,
@@ -966,6 +1096,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
       description: Type.String({ description: "Natural-language playlist brief, e.g. tropical house, deep house, jazzy soulful tunes" }),
       playlistName: Type.Optional(Type.String({ description: "Optional proposed playlist name" })),
       trackCount: Type.Optional(Type.Number({ minimum: 5, maximum: 100, description: "How many tracks to include in the preview. Defaults to 25." })),
+      selectionSeed: Type.Optional(Type.String({ description: "Optional seed to reproduce a prior preview exactly." })),
     }),
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await loadConfig(ctx.cwd);
@@ -982,6 +1113,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
     promptGuidelines: [
       "Use apple_music_preview_playlist first when the user asks for a playlist, unless they explicitly ask to create it immediately or confirm a reviewed proposal.",
       "Use apple_music_create_playlist when the user explicitly asks to create now, skip preview, or confirms a reviewed playlist proposal.",
+      "When confirming a reviewed preview, reuse the preview selectionSeed if it is available so the created playlist matches the reviewed tracklist exactly.",
       "Interpret genre requests as curation requests, not literal title matching. Prefer representative artists, editorial playlist signals, and artist-led discovery.",
       "When the user says things like 'I want to get into k-pop' or 'where should I start with jazz', treat that as a discovery request and build an accessible starter playlist.",
       "Use apple_music_transport for local Music.app playback controls like play, pause, skip, shuffle/random, repeat, volume, or playing a specific playlist.",
@@ -991,6 +1123,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
       playlistName: Type.Optional(Type.String({ description: "Optional explicit playlist name" })),
       trackCount: Type.Optional(Type.Number({ minimum: 5, maximum: 100, description: "How many tracks to include. Defaults to 25." })),
       startPlaying: Type.Optional(Type.Boolean({ description: "If true, try to start playing the playlist locally after creating it." })),
+      selectionSeed: Type.Optional(Type.String({ description: "Optional seed from a reviewed preview to recreate the exact same tracklist." })),
     }),
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await loadConfig(ctx.cwd);
