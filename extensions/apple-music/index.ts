@@ -13,6 +13,7 @@ type AppleMusicConfig = {
   developerToken?: string;
   musicUserToken?: string;
   storefront?: string;
+  plannerModel?: string;
 };
 
 type AppleMusicSong = {
@@ -155,6 +156,7 @@ type CandidateSong = {
 type PlannerRuntime = {
   model?: any;
   modelRegistry?: any;
+  plannerModel?: string;
 };
 
 const APPLE_MUSIC_FOLDER_NAME = "piMusic";
@@ -261,6 +263,10 @@ async function loadConfig(cwd: string): Promise<AppleMusicConfig> {
       (projectConfig?.storefront as string | undefined) ??
       (userConfig?.storefront as string | undefined) ??
       "us",
+    plannerModel:
+      process.env.APPLE_MUSIC_PLANNER_MODEL ??
+      (projectConfig?.plannerModel as string | undefined) ??
+      (userConfig?.plannerModel as string | undefined),
   };
 }
 
@@ -417,14 +423,27 @@ function asStringArray(value: unknown, maxItems = 12): string[] {
     .slice(0, maxItems);
 }
 
+function resolvePlannerModel(runtime?: PlannerRuntime): any | undefined {
+  if (!runtime?.modelRegistry) return runtime?.model;
+  if (!runtime.plannerModel) return runtime.model;
+
+  const [provider, ...rest] = runtime.plannerModel.split("/");
+  const modelId = rest.join("/").trim();
+  if (!provider || !modelId) return runtime.model;
+  return runtime.modelRegistry.find(provider, modelId) ?? runtime.model;
+}
+
 async function getLlmPlaylistPlannerSuggestion(
   description: string,
   heuristicPlan: PlaylistPlan,
   runtime?: PlannerRuntime,
 ): Promise<PlaylistPlannerSuggestion | undefined> {
-  if (!runtime?.model || !runtime?.modelRegistry) return undefined;
+  if (!runtime?.modelRegistry) return undefined;
 
-  const auth = await runtime.modelRegistry.getApiKeyAndHeaders(runtime.model);
+  const plannerModel = resolvePlannerModel(runtime);
+  if (!plannerModel) return undefined;
+
+  const auth = await runtime.modelRegistry.getApiKeyAndHeaders(plannerModel);
   if (!auth.ok || !auth.apiKey) return undefined;
 
   const systemPrompt = `You are a music curation planner for Apple Music playlist generation.
@@ -487,7 +506,7 @@ Example 2 output: {"inferredGenres":["Ambient","Dream Pop","Nordic Electronica"]
   );
 
   const response = await complete(
-    runtime.model,
+    plannerModel,
     {
       systemPrompt,
       messages: [
@@ -1580,7 +1599,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
-      return previewCuratedPlaylist(config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry });
+      return previewCuratedPlaylist(config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
     },
   });
 
@@ -1607,7 +1626,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
-      return createCuratedPlaylist(pi, config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry });
+      return createCuratedPlaylist(pi, config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
     },
   });
 
