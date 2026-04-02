@@ -3,7 +3,9 @@
 Pi extension that:
 
 - previews and creates Apple Music playlists from natural-language descriptions
+- supports collaborative playlist planning with follow-up refinement directions
 - places generated playlists inside the `piMusic` playlist folder in Apple Music
+- stores prompt/refinement metadata in playlist descriptions for later evolution
 - controls the local Music app on macOS (`play`, `pause`, `next`, `previous`, shuffle/random, repeat, volume, playlist playback)
 
 ## What it can do
@@ -13,6 +15,7 @@ Examples:
 - "Make me a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Preview a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Create an Apple Music playlist with tropical house, deep house, jazzy soulful tunes"
+- "I want Chinese and Japanese lo-fi electronic music to study, concentrate and code"
 - "Pause Apple Music"
 - "Skip this track"
 - "Turn shuffle on"
@@ -46,7 +49,7 @@ To create playlists in your Apple Music account, this extension needs:
 - a **music user token**
 - your **storefront** (for example `us`, `fr`, `gb`)
 
-Generated playlists are organized under a `piMusic` folder in Apple Music. On macOS, the extension checks for that folder first and creates it automatically if it does not exist.
+Generated playlists are organized under a `piMusic` folder in Apple Music. The extension now tries to create playlists directly in that folder through the Apple Music API `parent` relationship. On macOS, AppleScript folder creation/move remains as a fallback if needed.
 
 You can configure credentials in either:
 
@@ -191,6 +194,7 @@ Once configured, try one of these:
 
 - "Preview a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Create an Apple Music playlist with tropical house, deep house, jazzy soulful tunes"
+- `/apple-music-playlist tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-preview tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-make tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-status`
@@ -222,9 +226,11 @@ Natural language:
 - "Set repeat to all"
 - "Play my playlist Sunset House"
 
-For playlist generation, the preferred UX is preview first and create on confirmation. If the user explicitly says to create immediately, pi can bypass preview.
+For playlist generation, the preferred UX is collaborative planning or preview first, then create on confirmation. If the prompt is ambiguous, the extension can surface high-confidence picks, optional directions, familiar artists, and quick refinement questions instead of pretending the first result is perfect. If the user explicitly says to create immediately, pi can bypass preview.
 
-When playlists are created through pi, they are intended to live inside the `piMusic` folder. On macOS the extension waits about 10 seconds before attempting to move the playlist, then retries a few times in case Music.app library sync is still catching up.
+When playlists are created through pi, the extension first tries to place them directly in the `piMusic` folder through the Apple Music API. On macOS, AppleScript folder creation/move is still used as a fallback if library folder placement through the API is unavailable.
+
+Created playlist descriptions store compact metadata including the original prompt, inferred refinements, and selection seed so the playlist can be evolved later.
 
 Slash commands:
 
@@ -236,6 +242,7 @@ Slash commands:
 - `/apple-music-prev`
 - `/apple-music-shuffle on`
 - `/apple-music-repeat off|one|all`
+- `/apple-music-playlist <description>`
 - `/apple-music-preview <description>`
 - `/apple-music-make <description>`
 
@@ -243,7 +250,8 @@ Slash commands:
 
 - Playlist creation needs valid Apple Music API credentials.
 - Local transport controls currently target **macOS Music.app**.
-- Generated playlists are placed in the `piMusic` folder when Music.app can see them.
-- The extension currently uses AppleScript to move playlists into `piMusic`; the Apple Music web API support for folder inspection does not imply playlist move support.
+- Generated playlists are placed in the `piMusic` folder, preferably via the Apple Music API `parent` relationship, with AppleScript fallback on macOS.
+- Playlist descriptions store compact provenance data: prompt, refinements, and selection seed.
+- The planner now combines heuristic Apple Music curation logic with an LLM-assisted interpretation layer for more nuanced prompts.
 - "random" is implemented via shuffle.
 - A local helper page is available at `helper/music-user-token.html`, served by `npm run token-helper`.
