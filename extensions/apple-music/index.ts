@@ -153,6 +153,8 @@ type CandidateSong = {
   genresMatched: Set<string>;
   facetMatches: Set<string>;
   reasons: Set<string>;
+  sourceReleaseName?: string;
+  sourceReleaseType?: "album" | "ep" | "single" | "other";
   score: number;
 };
 
@@ -391,6 +393,8 @@ function candidateToSerializable(candidate: CandidateSong) {
     name: candidate.song.attributes?.name,
     artistName: candidate.song.attributes?.artistName,
     albumName: candidate.song.attributes?.albumName,
+    sourceReleaseName: candidate.sourceReleaseName,
+    sourceReleaseType: candidate.sourceReleaseType,
     genreNames: candidate.song.attributes?.genreNames,
     url: candidate.song.attributes?.url,
     score: candidate.score,
@@ -818,6 +822,8 @@ function trackCandidate(map: Map<string, CandidateSong>, song: AppleMusicSong): 
     genresMatched: new Set<string>(),
     facetMatches: new Set<string>(),
     reasons: new Set<string>(),
+    sourceReleaseName: undefined,
+    sourceReleaseType: undefined,
     score: 0,
   };
   map.set(song.id, created);
@@ -968,6 +974,25 @@ function canonicalTrackSignature(candidate: CandidateSong): string {
   return canonicalizeTrackTitle(candidate.song.attributes?.name ?? "");
 }
 
+function classifyReleaseType(releaseName: string): "album" | "ep" | "single" | "other" {
+  const normalized = normalizeText(releaseName);
+  if (/\bep\b/.test(normalized)) return "ep";
+  if (/\bsingle\b/.test(normalized)) return "single";
+  return normalized ? "album" : "other";
+}
+
+function hasVersionMarker(title: string): boolean {
+  return /(live|acoustic|alternate|alt\b|remix|version|session|demo|instrumental|piano solo|duet|edit)/i.test(title);
+}
+
+function shouldIncludeAllSingles(plan: PlaylistPlan): boolean {
+  return /all singles|include singles|keep singles/.test(plan.normalizedDescription);
+}
+
+function shouldIncludeAlternateVersions(plan: PlaylistPlan): boolean {
+  return /live|acoustic|alternate|remix|version|session|demo|instrumental|duet/.test(plan.normalizedDescription);
+}
+
 function songArtistIncludesTarget(songArtistName: string, targetArtistName: string): boolean {
   const normalizedSongArtist = normalizeText(songArtistName);
   const normalizedTargetArtist = normalizeText(targetArtistName);
@@ -1035,6 +1060,48 @@ function buildFacetTargets(plan: PlaylistPlan, trackCount: number): Map<string, 
 function findUncoveredMajorFacets(plan: PlaylistPlan, selected: CandidateSong[], trackCount: number): string[] {
   const covered = new Set(selected.flatMap((candidate) => [...candidate.facetMatches]));
   return buildMajorFacets(plan, trackCount).filter((facet) => !covered.has(facet));
+}
+
+function buildDiscographySelection(
+  candidates: CandidateSong[],
+  plan: PlaylistPlan,
+): { selectedCandidates: CandidateSong[]; skippedCandidates: Array<CandidateSong & { skipReason: string }> } {
+  const includeAllSingles = shouldIncludeAllSingles(plan);
+  const includeAlternateVersions = shouldIncludeAlternateVersions(plan);
+  const selected: CandidateSong[] = [];
+  const skipped: Array<CandidateSong & { skipReason: string }> = [];
+  const selectedIds = new Set<string>();
+  const coreSignatures = new Set<string>();
+
+  const pushSelected = (candidate: CandidateSong) => {
+    if (selectedIds.has(candidate.song.id)) return;
+    selected.push(candidate);
+    selectedIds.add(candidate.song.id);
+  };
+
+  const byReleaseType = (releaseType: "album" | "ep" | "single" | "other") =>
+    candidates.filter((candidate) => (candidate.sourceReleaseType ?? "other") === releaseType);
+
+  for (const candidate of [...byReleaseType("album"), ...byReleaseType("ep")]) {
+    pushSelected(candidate);
+    coreSignatures.add(canonicalTrackSignature(candidate));
+  }
+
+  for (const candidate of [...byReleaseType("single"), ...byReleaseType("other")]) {
+    const signature = canonicalTrackSignature(candidate);
+    const isAlternate = hasVersionMarker(candidate.song.attributes?.name ?? "") || hasVersionMarker(candidate.sourceReleaseName ?? "");
+    if (!includeAllSingles && coreSignatures.has(signature) && (!includeAlternateVersions || !isAlternate)) {
+      skipped.push({ ...candidate, skipReason: isAlternate ? "alternate-single-excluded" : "single-duplicate-of-album-or-ep" });
+      continue;
+    }
+    if (coreSignatures.has(signature) && isAlternate && !includeAlternateVersions) {
+      skipped.push({ ...candidate, skipReason: "alternate-version-excluded" });
+      continue;
+    }
+    pushSelected(candidate);
+  }
+
+  return { selectedCandidates: selected, skippedCandidates: skipped };
 }
 
 function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, seedKey: string, plan: PlaylistPlan): CandidateSong[] {
@@ -1284,6 +1351,8 @@ async function collectDiscographyCandidates(
       candidate.albumTrackHits += 3;
       candidate.seedArtistHits += 2;
       candidate.queryMatches.add(plan.targetArtist);
+      candidate.sourceReleaseName ??= album.attributes?.name ?? song.attributes?.albumName;
+      candidate.sourceReleaseType ??= classifyReleaseType(album.attributes?.name ?? song.attributes?.albumName ?? "");
       candidate.reasons.add(`discography: ${artistName}`);
     }
   }
@@ -1298,6 +1367,8 @@ async function collectDiscographyCandidates(
     candidate.artistTopSongHits += 2;
     candidate.seedArtistHits += 2;
     candidate.queryMatches.add(plan.targetArtist);
+    candidate.sourceReleaseName ??= song.attributes?.albumName;
+    candidate.sourceReleaseType ??= classifyReleaseType(song.attributes?.albumName ?? "");
     candidate.reasons.add(`artist catalog: ${artistName}`);
   }
 }
@@ -1594,7 +1665,8 @@ async function buildCuratedPlaylistPreview(
   const trackCount = Math.max(5, requestedTrackCount);
   const selectionSeed = params.selectionSeed ?? `${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`;
   const selectionSeedKey = `${params.description}::${params.playlistName ?? ""}::${trackCount}::${selectionSeed}`;
-  const selectedCandidates = selectPlaylistSongs(candidates, trackCount, selectionSeedKey, plan);
+  const discographySelection = plan.discographyIntent ? buildDiscographySelection(candidates, plan) : undefined;
+  const selectedCandidates = discographySelection?.selectedCandidates ?? selectPlaylistSongs(candidates, trackCount, selectionSeedKey, plan);
   if (selectedCandidates.length === 0) {
     throw new Error(`No Apple Music songs matched: ${params.description}`);
   }
@@ -1603,7 +1675,7 @@ async function buildCuratedPlaylistPreview(
   const playlistName = (params.playlistName?.trim() || derivePlaylistName(params.description)).slice(0, 100);
   const playlistDescription = buildStoredPlaylistDescription(params.description, plan, selectionSeed);
   const selectedIds = new Set(selectedCandidates.map((candidate) => candidate.song.id));
-  const skippedCandidates = candidates.filter((candidate) => !selectedIds.has(candidate.song.id)).map((candidate) => ({
+  const skippedCandidates = discographySelection?.skippedCandidates ?? candidates.filter((candidate) => !selectedIds.has(candidate.song.id)).map((candidate) => ({
     ...candidate,
     skipReason: plan.discographyIntent ? "not-selected-for-final-playlist" : "not-selected-after-ranking",
   }));
