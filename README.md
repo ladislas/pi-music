@@ -53,6 +53,34 @@ cp .pi/apple-music.example.json .pi/apple-music.json
 
 Then fill in your Apple Music tokens.
 
+### 3) Get the Music User Token with the helper page
+
+This repo now includes a small local helper page.
+
+Start it with:
+
+```bash
+npm run token-helper
+```
+
+Then open:
+
+```text
+http://localhost:8787/music-user-token.html
+```
+
+What it does:
+- you paste your Apple Music developer token
+- it initializes MusicKit JS in the browser
+- you sign in with Apple Music
+- it returns the `musicUserToken`
+- it shows a ready-to-copy JSON config snippet
+
+Important:
+- your Apple Music app configuration may need to allow `http://localhost:8787` as an origin
+- you need an Apple Music subscription on the Apple account you sign in with
+- if login fails, try Safari and make sure popups are allowed
+
 ## Install in pi
 
 ### Project-local
@@ -94,3 +122,4 @@ Slash commands:
 - Playlist creation needs valid Apple Music API credentials.
 - Local transport controls currently target **macOS Music.app**.
 - "random" is implemented via shuffle.
+- A local helper page is available at `helper/music-user-token.html`, served by `npm run token-helper`.
