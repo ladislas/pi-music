@@ -524,10 +524,13 @@ function candidatePrimaryGenre(candidate: CandidateSong): string {
 }
 
 function canonicalizeTrackTitle(title: string): string {
-  return normalizeText(title)
-    .replace(/\((radio edit|extended mix|extended version|club mix|dub mix|mix|remix|edit|version|live|instrumental|acoustic|remaster(?:ed)?[^)]*)\)/g, " ")
-    .replace(/\[(radio edit|extended mix|extended version|club mix|dub mix|mix|remix|edit|version|live|instrumental|acoustic|remaster(?:ed)?[^\]]*)\]/g, " ")
-    .replace(/\b(feat|featuring|ft)\b.*$/g, " ")
+  return title
+    .toLowerCase()
+    .replace(/\(([^)]*(radio edit|extended mix|extended version|club mix|dub mix|mix|remix|edit|version|live|instrumental|acoustic|remaster(?:ed)?)[^)]*)\)/g, " ")
+    .replace(/\[([^\]]*(radio edit|extended mix|extended version|club mix|dub mix|mix|remix|edit|version|live|instrumental|acoustic|remaster(?:ed)?)[^\]]*)\]/g, " ")
+    .replace(/[-–—]\s*(radio edit|extended mix|extended version|club mix|dub mix|mix|remix|edit|version|live|instrumental|acoustic|remaster(?:ed)?).*$/g, " ")
+    .replace(/\b(feat\.?|featuring|ft\.?)\b.*$/g, " ")
+    .replace(/[^a-z0-9\s]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
