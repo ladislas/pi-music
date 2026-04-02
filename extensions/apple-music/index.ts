@@ -423,14 +423,27 @@ function asStringArray(value: unknown, maxItems = 12): string[] {
     .slice(0, maxItems);
 }
 
-function resolvePlannerModel(runtime?: PlannerRuntime): any | undefined {
+async function resolvePlannerModel(runtime?: PlannerRuntime): Promise<any | undefined> {
   if (!runtime?.modelRegistry) return runtime?.model;
-  if (!runtime.plannerModel) return runtime.model;
 
-  const [provider, ...rest] = runtime.plannerModel.split("/");
-  const modelId = rest.join("/").trim();
-  if (!provider || !modelId) return runtime.model;
-  return runtime.modelRegistry.find(provider, modelId) ?? runtime.model;
+  if (runtime.plannerModel) {
+    const [provider, ...rest] = runtime.plannerModel.split("/");
+    const modelId = rest.join("/").trim();
+    if (provider && modelId) {
+      return runtime.modelRegistry.find(provider, modelId) ?? runtime.model;
+    }
+  }
+
+  const available = await runtime.modelRegistry.getAvailable();
+  const latestHaiku =
+    available.find((model: any) => model.provider === "anthropic" && String(model.id).toLowerCase().includes("haiku")) ??
+    available.find((model: any) => `${model.provider}/${model.id}`.toLowerCase().includes("anthropic/") && String(model.id).toLowerCase().includes("haiku"));
+  if (latestHaiku) return latestHaiku;
+
+  const gpt54Mini = available.find((model: any) => model.provider === "openai" && String(model.id).toLowerCase() === "gpt-5.4-mini");
+  if (gpt54Mini) return gpt54Mini;
+
+  return runtime.model;
 }
 
 async function getLlmPlaylistPlannerSuggestion(
@@ -440,7 +453,7 @@ async function getLlmPlaylistPlannerSuggestion(
 ): Promise<PlaylistPlannerSuggestion | undefined> {
   if (!runtime?.modelRegistry) return undefined;
 
-  const plannerModel = resolvePlannerModel(runtime);
+  const plannerModel = await resolvePlannerModel(runtime);
   if (!plannerModel) return undefined;
 
   const auth = await runtime.modelRegistry.getApiKeyAndHeaders(plannerModel);
