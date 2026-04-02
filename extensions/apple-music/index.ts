@@ -380,31 +380,12 @@ function assistantTextContent(text: string) {
   return [{ type: "text", text }] as Array<{ type: "text"; text: string }>;
 }
 
-async function appendAssistantTextMessage(ctx: any, text: string): Promise<void> {
-  const model = ctx.model;
-  await ctx.sessionManager.appendMessage({
-    role: "assistant",
-    content: assistantTextContent(text),
-    api: model?.api ?? "extension",
-    provider: model?.provider ?? "extension",
-    model: model?.id ?? "apple-music",
-    usage: {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationInputTokens: 0,
-      cacheReadInputTokens: 0,
-      reasoningTokens: 0,
-      cost: {
-        input: 0,
-        output: 0,
-        cacheCreation: 0,
-        cacheRead: 0,
-        reasoning: 0,
-        total: 0,
-      },
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
+function appendAssistantTextMessage(pi: ExtensionAPI, _ctx: any, text: string): void {
+  pi.sendMessage({
+    customType: "apple-music-result",
+    content: text,
+    display: true,
+    details: { timestamp: Date.now() },
   });
 }
 
@@ -1907,7 +1888,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ensureApiConfig(config);
         const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
-        await appendAssistantTextMessage(ctx, text);
+        appendAssistantTextMessage(pi, ctx, text);
         ctx.ui.notify(text, "info");
         ctx.ui.notify("Playlist preview ready.", "success");
       } catch (error) {
@@ -1935,7 +1916,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ensureApiConfig(config);
         const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
-        await appendAssistantTextMessage(ctx, text);
+        appendAssistantTextMessage(pi, ctx, text);
         ctx.ui.notify(text, "info");
         ctx.ui.notify("Playlist preview ready.", "success");
       } catch (error) {
@@ -1963,7 +1944,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ensureApiConfig(config);
         const result = await createCuratedPlaylist(pi, config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
-        await appendAssistantTextMessage(ctx, text);
+        appendAssistantTextMessage(pi, ctx, text);
         ctx.ui.notify(text, "info");
         ctx.ui.notify("Playlist created.", "success");
       } catch (error) {
