@@ -422,26 +422,30 @@ function detectDiscographyIntent(description: string): { discographyIntent: bool
   const strictArtistOnly = /(only songs by|only recordings by|do not include other artists|only the artist|all the .* songs)/i.test(description);
 
   const artistPatterns = [
-    /(?:all (?:the )?(?:songs|tracks|albums)(?: and albums)?(?: by)?|every song by|complete (?:playlist|discography)(?: of| for)?|all available tracks from)\s+(.+?)$/i,
-    /playlist (?:only )?of recordings by the artist\s+(.+?)(?:,|\.|$)/i,
-    /only songs by\s+(.+?)(?:,|\.|$)/i,
+    /all songs by\s+([^,.;]+)/i,
+    /every song by\s+([^,.;]+)/i,
+    /only songs by\s+([^,.;]+)/i,
+    /only recordings by(?: the artist)?\s+([^,.;]+)/i,
+    /all available tracks from\s+([^,.;]+)/i,
+    /complete (?:playlist|discography)(?: of| for)?\s+([^,.;]+)/i,
+    /all the\s+([^,.;]+?)\s+songs/i,
   ];
 
   let targetArtist: string | undefined;
   for (const pattern of artistPatterns) {
     const match = description.match(pattern);
     if (match?.[1]) {
-      targetArtist = match[1]
-        .replace(/^(the artist )/i, "")
-        .replace(/(?:make it bigger than.*|create now.*|preview now.*)$/i, "")
-        .trim();
+      targetArtist = match[1].replace(/^(the artist )/i, "").trim();
       break;
     }
   }
 
   if (!targetArtist && discographyIntent) {
-    const quoted = description.match(/\b(?:by|of)\s+([A-Za-z0-9 .'&+-]{2,})/i)?.[1]?.trim();
-    if (quoted) targetArtist = quoted;
+    const fallback = normalized
+      .replace(/.*(?:by|of|from)\s+/, "")
+      .split(/[,.;]/)[0]
+      ?.trim();
+    if (fallback) targetArtist = fallback;
   }
 
   return {
@@ -1881,6 +1885,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
+      ctx.ui.notify("Working on playlist preview...", "info");
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
       const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
@@ -1902,6 +1907,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
+      ctx.ui.notify("Working on playlist preview...", "info");
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
       const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
@@ -1923,6 +1929,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
+      ctx.ui.notify("Working on playlist creation...", "info");
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
       const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
