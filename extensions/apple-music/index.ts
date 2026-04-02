@@ -536,9 +536,7 @@ function canonicalizeTrackTitle(title: string): string {
 }
 
 function canonicalTrackSignature(candidate: CandidateSong): string {
-  const title = canonicalizeTrackTitle(candidate.song.attributes?.name ?? "");
-  const artist = normalizeText(candidate.song.attributes?.artistName ?? "");
-  return `${artist}::${title}`;
+  return canonicalizeTrackTitle(candidate.song.attributes?.name ?? "");
 }
 
 function canSelectCandidate(
@@ -546,12 +544,15 @@ function canSelectCandidate(
   selected: CandidateSong[],
   artistCounts: Map<string, number>,
   albumCounts: Map<string, number>,
+  seenTrackSignatures: Set<string>,
   maxPerArtist: number,
   maxPerAlbum: number,
   enforceSequentialGenreDiversity: boolean,
 ): boolean {
   const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
   const album = candidate.song.attributes?.albumName ?? "Unknown album";
+  const signature = canonicalTrackSignature(candidate);
+  if (signature && seenTrackSignatures.has(signature)) return false;
   if ((artistCounts.get(artist) ?? 0) >= maxPerArtist) return false;
   if ((albumCounts.get(album) ?? 0) >= maxPerAlbum) return false;
 
@@ -587,6 +588,7 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
   const preliminary: CandidateSong[] = [];
   const artistCounts = new Map<string, number>();
   const albumCounts = new Map<string, number>();
+  const seenTrackSignatures = new Set<string>();
   const available = [...ranked.slice(0, initialPoolSize)];
   const fallback = [...ranked.slice(initialPoolSize)];
 
@@ -594,6 +596,8 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
     preliminary.push(candidate);
     const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
     const album = candidate.song.attributes?.albumName ?? "Unknown album";
+    const signature = canonicalTrackSignature(candidate);
+    if (signature) seenTrackSignatures.add(signature);
     artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
     albumCounts.set(album, (albumCounts.get(album) ?? 0) + 1);
   };
@@ -604,17 +608,18 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
     }
 
     let eligible = available.filter((candidate) =>
-      canSelectCandidate(candidate, preliminary, artistCounts, albumCounts, maxPerArtist, maxPerAlbum, true),
+      canSelectCandidate(candidate, preliminary, artistCounts, albumCounts, seenTrackSignatures, maxPerArtist, maxPerAlbum, true),
     );
     if (eligible.length === 0) {
       eligible = available.filter((candidate) =>
-        canSelectCandidate(candidate, preliminary, artistCounts, albumCounts, maxPerArtist, maxPerAlbum, false),
+        canSelectCandidate(candidate, preliminary, artistCounts, albumCounts, seenTrackSignatures, maxPerArtist, maxPerAlbum, false),
       );
     }
     if (eligible.length === 0) {
       eligible = available.filter((candidate) => {
         const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
-        return (artistCounts.get(artist) ?? 0) < maxPerArtist;
+        const signature = canonicalTrackSignature(candidate);
+        return !seenTrackSignatures.has(signature) && (artistCounts.get(artist) ?? 0) < maxPerArtist;
       });
     }
     if (eligible.length === 0) {
@@ -630,7 +635,8 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
 
   const finalized: CandidateSong[] = [];
   const seenSignatures = new Set<string>();
-  const finalizeFrom = [...preliminary, ...ranked.filter((candidate) => !preliminary.some((picked) => picked.song.id === candidate.song.id))];
+  const preliminaryIds = new Set(preliminary.map((candidate) => candidate.song.id));
+  const finalizeFrom = [...preliminary, ...ranked.filter((candidate) => !preliminaryIds.has(candidate.song.id))];
 
   for (const candidate of finalizeFrom) {
     const signature = canonicalTrackSignature(candidate);
