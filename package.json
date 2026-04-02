@@ -9,7 +9,8 @@
   },
   "scripts": {
     "check": "echo 'No checks configured'",
-    "token-helper": "node ./scripts/serve-token-helper.mjs"
+    "token-helper": "node ./scripts/serve-token-helper.mjs",
+    "generate-developer-token": "node ./scripts/generate-developer-token.mjs"
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",

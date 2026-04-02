@@ -56,7 +56,25 @@ cp .pi/apple-music.example.json .pi/apple-music.json
 
 Then fill in your Apple Music tokens.
 
-### 3) Get the Music User Token with the helper page
+### 3) Generate an Apple Music developer token locally
+
+This repo also includes a small helper script for generating a developer token from your Apple private key (`.p8`).
+
+Run:
+
+```bash
+npm run generate-developer-token -- --team-id <APPLE_TEAM_ID> --key-id <APPLE_KEY_ID> --private-key <PATH_TO_AUTHKEY_P8> [--days 180]
+```
+
+You can also provide these via environment variables:
+- `APPLE_TEAM_ID`
+- `APPLE_KEY_ID`
+- `APPLE_PRIVATE_KEY_PATH`
+- `APPLE_TOKEN_DAYS`
+
+The script prints the JWT developer token to stdout.
+
+### 4) Get the Music User Token with the helper page
 
 This repo now includes a small local helper page.
 
