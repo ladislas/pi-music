@@ -376,6 +376,24 @@ function formatBulletList(values: string[], prefix = "- "): string {
   return values.map((value) => `${prefix}${value}`).join("\n");
 }
 
+function assistantTextContent(text: string) {
+  return [{ type: "text", text }] as Array<{ type: "text"; text: string }>;
+}
+
+async function appendAssistantTextMessage(ctx: any, text: string): Promise<void> {
+  const model = ctx.model;
+  await ctx.sessionManager.appendMessage({
+    role: "assistant",
+    content: assistantTextContent(text),
+    api: model?.api ?? "extension",
+    provider: model?.provider ?? "extension",
+    model: model?.id ?? "apple-music",
+    usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, reasoningTokens: 0, totalCost: 0 },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  });
+}
+
 function splitPromptSegments(description: string): string[] {
   return unique(
     description
@@ -1863,7 +1881,11 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
-      pi.sendUserMessage(description);
+      const config = await loadConfig(ctx.cwd);
+      ensureApiConfig(config);
+      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+      const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
+      await appendAssistantTextMessage(ctx, text);
     },
   });
 
@@ -1880,7 +1902,11 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
-      pi.sendUserMessage(`Preview an Apple Music playlist with ${description}`);
+      const config = await loadConfig(ctx.cwd);
+      ensureApiConfig(config);
+      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+      const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
+      await appendAssistantTextMessage(ctx, text);
     },
   });
 
@@ -1897,7 +1923,11 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
-      pi.sendUserMessage(`Create an Apple Music playlist with ${description}`);
+      const config = await loadConfig(ctx.cwd);
+      ensureApiConfig(config);
+      const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+      const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
+      await appendAssistantTextMessage(ctx, text);
     },
   });
 }
