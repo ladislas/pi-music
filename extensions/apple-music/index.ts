@@ -435,13 +435,11 @@ async function resolvePlannerModel(runtime?: PlannerRuntime): Promise<any | unde
   }
 
   const available = await runtime.modelRegistry.getAvailable();
-  const latestHaiku =
-    available.find((model: any) => model.provider === "anthropic" && String(model.id).toLowerCase().includes("haiku")) ??
-    available.find((model: any) => `${model.provider}/${model.id}`.toLowerCase().includes("anthropic/") && String(model.id).toLowerCase().includes("haiku"));
-  if (latestHaiku) return latestHaiku;
+  const preferredHaiku = available.find((model: any) => model.provider === "anthropic" && String(model.id) === "claude-haiku-4-5-20251001");
+  if (preferredHaiku) return preferredHaiku;
 
-  const gpt54Mini = available.find((model: any) => model.provider === "openai" && String(model.id).toLowerCase() === "gpt-5.4-mini");
-  if (gpt54Mini) return gpt54Mini;
+  const preferredGptMini = available.find((model: any) => model.provider === "openai-codex" && String(model.id) === "gpt-5.4-mini");
+  if (preferredGptMini) return preferredGptMini;
 
   return runtime.model;
 }
