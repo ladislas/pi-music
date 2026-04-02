@@ -1,11 +1,13 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+
+import { GENRE_SEED_MAP, type SeedGenreEntry } from "./genre-seeds.js";
 
 type AppleMusicConfig = {
   developerToken?: string;
@@ -25,12 +27,50 @@ type AppleMusicSong = {
   };
 };
 
+type AppleMusicArtist = {
+  id: string;
+  type: string;
+  attributes?: {
+    name?: string;
+    genreNames?: string[];
+    editorialNotes?: { standard?: string; short?: string };
+  };
+};
+
+type AppleMusicAlbum = {
+  id: string;
+  type: string;
+  attributes?: {
+    name?: string;
+    artistName?: string;
+    genreNames?: string[];
+    editorialNotes?: { standard?: string; short?: string };
+  };
+};
+
+type AppleMusicPlaylist = {
+  id: string;
+  type: string;
+  attributes?: {
+    name?: string;
+    curatorName?: string;
+    description?: { standard?: string; short?: string };
+    editorialNotes?: { standard?: string; short?: string };
+    playlistType?: string;
+  };
+};
+
 type SearchResponse = {
   results?: {
-    songs?: {
-      data?: AppleMusicSong[];
-    };
+    songs?: { data?: AppleMusicSong[] };
+    artists?: { data?: AppleMusicArtist[] };
+    albums?: { data?: AppleMusicAlbum[] };
+    playlists?: { data?: AppleMusicPlaylist[] };
   };
+};
+
+type TracksResponse = {
+  data?: AppleMusicSong[];
 };
 
 type CreatePlaylistResponse = {
@@ -42,6 +82,37 @@ type CreatePlaylistResponse = {
       description?: { standard?: string };
     };
   }>;
+};
+
+type PlaylistPlan = {
+  originalDescription: string;
+  normalizedDescription: string;
+  inferredGenres: string[];
+  matchedSeedEntries: SeedGenreEntry[];
+  queries: string[];
+  seedArtists: string[];
+  relatedArtists: string[];
+  avoidTerms: string[];
+  discoveryIntent: boolean;
+  starterIntent: boolean;
+  broadRequest: boolean;
+  moods: string[];
+  notes: string[];
+};
+
+type CandidateSong = {
+  song: AppleMusicSong;
+  directSongHits: number;
+  artistTopSongHits: number;
+  albumTrackHits: number;
+  playlistTrackHits: number;
+  editorialPlaylistHits: number;
+  seedArtistHits: number;
+  relatedArtistHits: number;
+  queryMatches: Set<string>;
+  genresMatched: Set<string>;
+  reasons: Set<string>;
+  score: number;
 };
 
 const APPLE_MUSIC_FOLDER_NAME = "piMusic";
@@ -68,23 +139,36 @@ const STOP_WORDS = new Set([
   "a",
   "an",
   "and",
+  "apple",
   "are",
   "based",
+  "best",
+  "create",
   "for",
+  "get",
+  "great",
   "i",
   "in",
+  "into",
   "it",
+  "like",
   "me",
   "mix",
   "music",
+  "my",
   "of",
   "on",
   "playlist",
   "please",
-  "songs",
+  "playlists",
+  "recent",
   "some",
+  "songs",
+  "start",
+  "starter",
   "that",
   "the",
+  "these",
   "to",
   "track",
   "tracks",
@@ -92,6 +176,9 @@ const STOP_WORDS = new Set([
   "want",
   "with",
 ]);
+
+const DISCOVERY_PATTERNS = [/\bget into\b/i, /\bwhere should i start\b/i, /\bdive into\b/i, /\bnew to\b/i, /\bbeginner\b/i];
+const STARTER_PATTERNS = [/\bstarter\b/i, /\bessentials\b/i, /\bintro\b/i, /\bintroduction\b/i, /\bentry point\b/i];
 
 function isMacOS(): boolean {
   return process.platform === "darwin";
@@ -169,40 +256,20 @@ async function appleMusicRequest<T>(path: string, config: Required<AppleMusicCon
 function normalizeText(value: string): string {
   return value
     .toLowerCase()
-    .replace(/[^a-z0-9\s,/-]+/g, " ")
+    .replace(/[^a-z0-9\s,/'&+-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function tokenize(value: string): string[] {
   return normalizeText(value)
-    .split(/[\s,/-]+/)
+    .split(/[\s,/'&+-]+/)
     .map((token) => token.trim())
-    .filter((token) => token.length > 2 && !STOP_WORDS.has(token));
+    .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
 }
 
 function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
-}
-
-function buildSearchQueries(description: string): string[] {
-  const normalized = normalizeText(description);
-  const segments = normalized
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const tokens = tokenize(description);
-
-  const queries = [normalized, ...segments];
-  if (tokens.length > 0) queries.push(tokens.slice(0, 6).join(" "));
-  if (tokens.length > 2) {
-    for (let i = 0; i < Math.min(tokens.length - 1, 6); i += 2) {
-      const chunk = tokens.slice(i, i + 2).join(" ");
-      if (chunk) queries.push(chunk);
-    }
-  }
-
-  return unique(queries.filter((query) => query.length >= 3)).slice(0, 8);
 }
 
 function derivePlaylistName(description: string): string {
@@ -225,8 +292,136 @@ function songLabel(song: AppleMusicSong): string {
   return `${name} — ${artist}`;
 }
 
-function scoreSong(song: AppleMusicSong, description: string, queries: string[]): number {
-  const haystack = normalizeText(
+function splitPromptSegments(description: string): string[] {
+  return unique(
+    description
+      .split(/[,;]+|\band\b/gi)
+      .map((part) => part.trim())
+      .filter((part) => normalizeText(part).length >= 3),
+  );
+}
+
+function hasPattern(patterns: RegExp[], value: string): boolean {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+function buildPlaylistPlan(description: string): PlaylistPlan {
+  const normalizedDescription = normalizeText(description);
+  const matchedEntries: SeedGenreEntry[] = [];
+
+  for (const [genreKey, entry] of Object.entries(GENRE_SEED_MAP)) {
+    const phrases = unique([genreKey, entry.canonicalGenre, ...(entry.aliases ?? [])].map(normalizeText));
+    if (phrases.some((phrase) => phrase && normalizedDescription.includes(phrase))) {
+      matchedEntries.push(entry);
+    }
+  }
+
+  const inferredGenres = unique(
+    matchedEntries.length > 0
+      ? matchedEntries.map((entry) => entry.canonicalGenre)
+      : splitPromptSegments(description).slice(0, 4).map((segment) => normalizeText(segment)),
+  ).filter(Boolean);
+
+  const seedArtists = unique(matchedEntries.flatMap((entry) => entry.seedArtists)).slice(0, 12);
+  const relatedArtists = unique(matchedEntries.flatMap((entry) => entry.relatedArtists)).slice(0, 12);
+  const moods = unique(matchedEntries.flatMap((entry) => entry.moods ?? [])).slice(0, 8);
+  const avoidTerms = unique(
+    [
+      ...matchedEntries.flatMap((entry) => entry.avoidTerms ?? []),
+      ...inferredGenres,
+      "best of",
+      "workout mix",
+      "meditation music",
+      "study beats",
+    ].map(normalizeText),
+  ).filter(Boolean);
+
+  const queries = unique(
+    [
+      normalizedDescription,
+      ...splitPromptSegments(description),
+      ...inferredGenres,
+      ...matchedEntries.flatMap((entry) => entry.aliases.slice(0, 2)),
+      ...moods.slice(0, 3).map((mood) => `${mood} ${inferredGenres[0] ?? "music"}`),
+    ]
+      .map((query) => normalizeText(query))
+      .filter((query) => query.length >= 3),
+  ).slice(0, 8);
+
+  const discoveryIntent = hasPattern(DISCOVERY_PATTERNS, description);
+  const starterIntent = discoveryIntent || hasPattern(STARTER_PATTERNS, description);
+  const broadRequest = inferredGenres.length >= 3 || (inferredGenres.length === 0 && tokenize(description).length >= 5);
+  const notes = unique(matchedEntries.map((entry) => entry.notes).filter((note): note is string => Boolean(note))).slice(0, 3);
+
+  return {
+    originalDescription: description,
+    normalizedDescription,
+    inferredGenres,
+    matchedSeedEntries: matchedEntries,
+    queries,
+    seedArtists,
+    relatedArtists,
+    avoidTerms,
+    discoveryIntent,
+    starterIntent,
+    broadRequest,
+    moods,
+    notes,
+  };
+}
+
+async function searchCatalog(
+  config: Required<AppleMusicConfig>,
+  term: string,
+  types: Array<"songs" | "artists" | "albums" | "playlists">,
+  limit = 10,
+): Promise<SearchResponse> {
+  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/search?term=${encodeURIComponent(term)}&types=${types.join(",")}&limit=${limit}`;
+  return appleMusicRequest<SearchResponse>(path, config);
+}
+
+async function fetchArtistTopSongs(config: Required<AppleMusicConfig>, artistId: string, limit = 5): Promise<AppleMusicSong[]> {
+  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/artists/${encodeURIComponent(artistId)}/view/top-songs?limit=${limit}`;
+  const response = await appleMusicRequest<TracksResponse>(path, config);
+  return (response.data ?? []).filter((song) => song.type === "songs");
+}
+
+async function fetchAlbumTracks(config: Required<AppleMusicConfig>, albumId: string, limit = 6): Promise<AppleMusicSong[]> {
+  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/albums/${encodeURIComponent(albumId)}/tracks?limit=${limit}`;
+  const response = await appleMusicRequest<TracksResponse>(path, config);
+  return (response.data ?? []).filter((song) => song.type === "songs");
+}
+
+async function fetchPlaylistTracks(config: Required<AppleMusicConfig>, playlistId: string, limit = 12): Promise<AppleMusicSong[]> {
+  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/playlists/${encodeURIComponent(playlistId)}/tracks?limit=${limit}`;
+  const response = await appleMusicRequest<TracksResponse>(path, config);
+  return (response.data ?? []).filter((song) => song.type === "songs");
+}
+
+function trackCandidate(map: Map<string, CandidateSong>, song: AppleMusicSong): CandidateSong {
+  const existing = map.get(song.id);
+  if (existing) return existing;
+
+  const created: CandidateSong = {
+    song,
+    directSongHits: 0,
+    artistTopSongHits: 0,
+    albumTrackHits: 0,
+    playlistTrackHits: 0,
+    editorialPlaylistHits: 0,
+    seedArtistHits: 0,
+    relatedArtistHits: 0,
+    queryMatches: new Set<string>(),
+    genresMatched: new Set<string>(),
+    reasons: new Set<string>(),
+    score: 0,
+  };
+  map.set(song.id, created);
+  return created;
+}
+
+function buildSongHaystack(song: AppleMusicSong): string {
+  return normalizeText(
     [
       song.attributes?.name ?? "",
       song.attributes?.artistName ?? "",
@@ -234,36 +429,180 @@ function scoreSong(song: AppleMusicSong, description: string, queries: string[])
       ...(song.attributes?.genreNames ?? []),
     ].join(" "),
   );
-  const tokens = tokenize(description);
+}
+
+function isGenericArtistName(value: string): boolean {
+  const normalized = normalizeText(value);
+  return /(house music dj|various artists|workout|relax|sleep|study|beats|background music|meditation)/.test(normalized);
+}
+
+function scoreCandidate(songCandidate: CandidateSong, plan: PlaylistPlan): number {
+  const song = songCandidate.song;
+  const title = normalizeText(song.attributes?.name ?? "");
+  const artist = normalizeText(song.attributes?.artistName ?? "");
+  const haystack = buildSongHaystack(song);
 
   let score = 0;
-  for (const token of tokens) {
-    if (haystack.includes(token)) score += token.length > 5 ? 5 : 3;
-  }
-  for (const query of queries) {
-    if (query.length > 4 && haystack.includes(query)) score += 10;
+  score += songCandidate.directSongHits * 8;
+  score += songCandidate.artistTopSongHits * 20;
+  score += songCandidate.albumTrackHits * 8;
+  score += songCandidate.playlistTrackHits * 14;
+  score += songCandidate.editorialPlaylistHits * 10;
+  score += songCandidate.seedArtistHits * 36;
+  score += songCandidate.relatedArtistHits * 18;
+  score += songCandidate.queryMatches.size * 4;
+  score += songCandidate.genresMatched.size * 8;
+
+  for (const genre of plan.inferredGenres) {
+    const normalizedGenre = normalizeText(genre);
+    if (artist === normalizedGenre) score -= 40;
+    if (title === normalizedGenre) score -= 65;
+    if (haystack.includes(normalizedGenre)) score += 2;
   }
 
-  if ((song.attributes?.genreNames ?? []).length > 0) score += 2;
+  for (const avoidTerm of plan.avoidTerms) {
+    if (!avoidTerm) continue;
+    if (title === avoidTerm) score -= 75;
+    else if (title.includes(avoidTerm) && title.length <= avoidTerm.length + 10) score -= 25;
+  }
+
+  if (isGenericArtistName(song.attributes?.artistName ?? "")) score -= 70;
+  if ((song.attributes?.genreNames ?? []).length > 0) score += 3;
+  if (plan.discoveryIntent || plan.starterIntent) score += songCandidate.seedArtistHits > 0 ? 10 : 0;
+  if (songCandidate.playlistTrackHits > 0 && songCandidate.artistTopSongHits > 0) score += 8;
+
   return score;
 }
 
-async function searchSongs(config: Required<AppleMusicConfig>, description: string): Promise<AppleMusicSong[]> {
-  const queries = buildSearchQueries(description);
-  const allSongs: AppleMusicSong[] = [];
+function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number): CandidateSong[] {
+  const maxPerArtist = trackCount >= 30 ? 3 : 2;
+  const artistCounts = new Map<string, number>();
+  const selected: CandidateSong[] = [];
 
-  for (const query of queries) {
-    const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/search?term=${encodeURIComponent(query)}&types=songs&limit=15`;
-    const response = await appleMusicRequest<SearchResponse>(path, config);
-    allSongs.push(...(response.results?.songs?.data ?? []));
+  for (const candidate of candidates) {
+    const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
+    const count = artistCounts.get(artist) ?? 0;
+    if (count >= maxPerArtist) continue;
+    selected.push(candidate);
+    artistCounts.set(artist, count + 1);
+    if (selected.length >= trackCount) break;
   }
 
-  const byId = new Map<string, AppleMusicSong>();
-  for (const song of allSongs) {
-    if (!byId.has(song.id)) byId.set(song.id, song);
-  }
+  return selected;
+}
 
-  return [...byId.values()].sort((a, b) => scoreSong(b, description, queries) - scoreSong(a, description, queries));
+async function collectDirectSongCandidates(
+  config: Required<AppleMusicConfig>,
+  plan: PlaylistPlan,
+  candidates: Map<string, CandidateSong>,
+): Promise<void> {
+  for (const query of plan.queries) {
+    const response = await searchCatalog(config, query, ["songs"], 10);
+    for (const song of response.results?.songs?.data ?? []) {
+      const candidate = trackCandidate(candidates, song);
+      candidate.directSongHits += 1;
+      candidate.queryMatches.add(query);
+      candidate.reasons.add(`song search: ${query}`);
+      for (const genre of plan.inferredGenres) {
+        if (buildSongHaystack(song).includes(normalizeText(genre))) {
+          candidate.genresMatched.add(genre);
+        }
+      }
+    }
+  }
+}
+
+async function collectArtistCandidates(
+  config: Required<AppleMusicConfig>,
+  plan: PlaylistPlan,
+  candidates: Map<string, CandidateSong>,
+): Promise<void> {
+  const artistNames = unique([...plan.seedArtists, ...plan.relatedArtists]).slice(0, 10);
+  for (const artistName of artistNames) {
+    const response = await searchCatalog(config, artistName, ["artists"], 3);
+    const artist = (response.results?.artists?.data ?? [])[0];
+    if (!artist?.id) continue;
+    const topSongs = await fetchArtistTopSongs(config, artist.id, plan.discoveryIntent || plan.starterIntent ? 6 : 4);
+    for (const song of topSongs) {
+      const candidate = trackCandidate(candidates, song);
+      candidate.artistTopSongHits += 1;
+      if (plan.seedArtists.includes(artistName)) {
+        candidate.seedArtistHits += 1;
+        candidate.reasons.add(`seed artist: ${artistName}`);
+      } else {
+        candidate.relatedArtistHits += 1;
+        candidate.reasons.add(`related artist: ${artistName}`);
+      }
+    }
+  }
+}
+
+function isEditorialPlaylist(playlist: AppleMusicPlaylist): boolean {
+  const curator = normalizeText(playlist.attributes?.curatorName ?? "");
+  return curator.includes("apple music") || Boolean(playlist.attributes?.editorialNotes?.standard || playlist.attributes?.description?.standard);
+}
+
+async function collectAlbumCandidates(
+  config: Required<AppleMusicConfig>,
+  plan: PlaylistPlan,
+  candidates: Map<string, CandidateSong>,
+): Promise<void> {
+  for (const query of plan.queries.slice(0, 4)) {
+    const response = await searchCatalog(config, query, ["albums"], 3);
+    for (const album of response.results?.albums?.data ?? []) {
+      if (!album.id) continue;
+      const tracks = await fetchAlbumTracks(config, album.id, 5);
+      for (const song of tracks) {
+        const candidate = trackCandidate(candidates, song);
+        candidate.albumTrackHits += 1;
+        candidate.queryMatches.add(query);
+        candidate.reasons.add(`album signal: ${album.attributes?.name ?? query}`);
+      }
+    }
+  }
+}
+
+async function collectPlaylistCandidates(
+  config: Required<AppleMusicConfig>,
+  plan: PlaylistPlan,
+  candidates: Map<string, CandidateSong>,
+): Promise<void> {
+  for (const query of plan.queries.slice(0, 4)) {
+    const response = await searchCatalog(config, query, ["playlists"], 3);
+    for (const playlist of response.results?.playlists?.data ?? []) {
+      if (!playlist.id) continue;
+      const tracks = await fetchPlaylistTracks(config, playlist.id, plan.discoveryIntent || plan.starterIntent ? 14 : 10);
+      const editorial = isEditorialPlaylist(playlist);
+      for (const song of tracks) {
+        const candidate = trackCandidate(candidates, song);
+        candidate.playlistTrackHits += 1;
+        if (editorial) candidate.editorialPlaylistHits += 1;
+        candidate.queryMatches.add(query);
+        candidate.reasons.add(
+          `${editorial ? "editorial playlist" : "playlist"}: ${playlist.attributes?.name ?? query}${playlist.attributes?.curatorName ? ` (${playlist.attributes.curatorName})` : ""}`,
+        );
+      }
+    }
+  }
+}
+
+async function curateSongs(config: Required<AppleMusicConfig>, description: string): Promise<{ plan: PlaylistPlan; candidates: CandidateSong[] }> {
+  const plan = buildPlaylistPlan(description);
+  const candidates = new Map<string, CandidateSong>();
+
+  await collectDirectSongCandidates(config, plan, candidates);
+  await collectArtistCandidates(config, plan, candidates);
+  await collectAlbumCandidates(config, plan, candidates);
+  await collectPlaylistCandidates(config, plan, candidates);
+
+  const ranked = [...candidates.values()]
+    .map((candidate) => ({
+      ...candidate,
+      score: scoreCandidate(candidate, plan),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  return { plan, candidates: ranked };
 }
 
 async function createPlaylist(
@@ -326,7 +665,7 @@ async function ensurePlaylistFolder(pi: ExtensionAPI, folderName = APPLE_MUSIC_F
     'tell application "Music"',
     `if not (exists folder playlist "${name}") then`,
     `make new folder playlist with properties {name:"${name}"}`,
-    'end if',
+    "end if",
     'end tell',
   ]);
 }
@@ -347,12 +686,12 @@ async function movePlaylistToFolder(
       'tell application "Music"',
       `if not (exists folder playlist "${folder}") then`,
       `make new folder playlist with properties {name:"${folder}"}`,
-      'end if',
+      "end if",
       `if exists user playlist "${playlist}" then`,
       `set targetPlaylist to first user playlist whose name is "${playlist}"`,
       `move targetPlaylist to folder playlist "${folder}"`,
       'return "moved"',
-      'end if',
+      "end if",
       'return "missing"',
       'end tell',
     ]);
@@ -458,8 +797,86 @@ async function transport(pi: ExtensionAPI, action: (typeof TRANSPORT_ACTIONS)[nu
   }
 }
 
+async function createCuratedPlaylist(
+  pi: ExtensionAPI,
+  config: Required<AppleMusicConfig>,
+  params: { description: string; playlistName?: string; trackCount?: number; startPlaying?: boolean },
+) {
+  const { plan, candidates } = await curateSongs(config, params.description);
+  if (candidates.length === 0) {
+    throw new Error(`No Apple Music songs matched: ${params.description}`);
+  }
+
+  if (isMacOS()) {
+    await ensurePlaylistFolder(pi);
+  }
+
+  const trackCount = clamp(Math.round(params.trackCount ?? 25), 5, 100);
+  const selectedCandidates = selectPlaylistSongs(candidates, trackCount);
+  if (selectedCandidates.length === 0) {
+    throw new Error(`No Apple Music songs matched: ${params.description}`);
+  }
+
+  const selected = selectedCandidates.map((candidate) => candidate.song);
+  const playlistName = (params.playlistName?.trim() || derivePlaylistName(params.description)).slice(0, 100);
+  const playlistDescription = `Generated by pi from: ${params.description}`;
+  const created = await createPlaylist(config, playlistName, playlistDescription, selected);
+  const movedToFolder = isMacOS() ? await movePlaylistToFolder(pi, playlistName) : false;
+
+  let playbackMessage = "";
+  if (params.startPlaying && isMacOS()) {
+    try {
+      playbackMessage = `\n${await transport(pi, "play_playlist", { playlistName })}`;
+    } catch (error) {
+      playbackMessage = `\nPlaylist created, but local playback failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  const preview = selected.slice(0, 10).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
+  const remainder = selected.length > 10 ? `\n...and ${selected.length - 10} more.` : "";
+  const planSummary = [
+    plan.inferredGenres.length > 0 ? `Genres: ${plan.inferredGenres.join(", ")}` : "",
+    plan.seedArtists.length > 0 ? `Seed artists: ${plan.seedArtists.slice(0, 6).join(", ")}` : "",
+    plan.discoveryIntent || plan.starterIntent ? "Mode: discovery / starter" : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return {
+    content: [
+      {
+        type: "text",
+        text:
+          `Created Apple Music playlist \"${playlistName}\" with ${selected.length} tracks.` +
+          `\nPlaylist id: ${created.id}` +
+          `\nFolder: ${APPLE_MUSIC_FOLDER_NAME}${movedToFolder ? "" : " (pending sync to Music.app)"}` +
+          `${planSummary ? `\n${planSummary}` : ""}` +
+          `\n\nTop picks:\n${preview}${remainder}${playbackMessage}`,
+      },
+    ],
+    details: {
+      playlistId: created.id,
+      playlistName,
+      playlistDescription,
+      playlistFolder: APPLE_MUSIC_FOLDER_NAME,
+      movedToFolder,
+      plan,
+      songs: selectedCandidates.map((candidate) => ({
+        id: candidate.song.id,
+        name: candidate.song.attributes?.name,
+        artistName: candidate.song.attributes?.artistName,
+        albumName: candidate.song.attributes?.albumName,
+        genreNames: candidate.song.attributes?.genreNames,
+        url: candidate.song.attributes?.url,
+        score: candidate.score,
+        reasons: [...candidate.reasons].slice(0, 4),
+      })),
+    },
+  };
+}
+
 export default function appleMusicExtension(pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (_event: any, ctx: any) => {
     const config = await loadConfig(ctx.cwd);
     const playbackStatus = isMacOS() ? "local playback ready" : "local playback unavailable (macOS only)";
     const playlistStatus = config.developerToken && config.musicUserToken ? "playlist API ready" : "playlist API not configured";
@@ -471,10 +888,12 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "apple_music_create_playlist",
     label: "Apple Music Playlist",
-    description: "Create an Apple Music playlist from a natural-language description using the Apple Music catalog and add tracks to the user's library playlist.",
-    promptSnippet: "Create Apple Music playlists from natural-language mood, genre, and vibe descriptions.",
+    description: "Create an Apple Music playlist from a natural-language description using the Apple Music catalog and curated Apple Music signals.",
+    promptSnippet: "Create curated Apple Music playlists from natural-language mood, genre, vibe, and discovery descriptions.",
     promptGuidelines: [
-      "Use apple_music_create_playlist when the user asks for a playlist based on mood, genre, vibe, or a textual description.",
+      "Use apple_music_create_playlist when the user asks for a playlist based on mood, genre, vibe, discovery, or a textual description.",
+      "Interpret genre requests as curation requests, not literal title matching. Prefer representative artists, editorial playlist signals, and artist-led discovery.",
+      "When the user says things like 'I want to get into k-pop' or 'where should I start with jazz', treat that as a discovery request and build an accessible starter playlist.",
       "Use apple_music_transport for local Music.app playback controls like play, pause, skip, shuffle/random, repeat, volume, or playing a specific playlist.",
     ],
     parameters: Type.Object({
@@ -483,65 +902,10 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
       trackCount: Type.Optional(Type.Number({ minimum: 5, maximum: 100, description: "How many tracks to include. Defaults to 25." })),
       startPlaying: Type.Optional(Type.Boolean({ description: "If true, try to start playing the playlist locally after creating it." })),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
-
-      const candidates = await searchSongs(config, params.description);
-      if (candidates.length === 0) {
-        throw new Error(`No Apple Music songs matched: ${params.description}`);
-      }
-
-      if (isMacOS()) {
-        await ensurePlaylistFolder(pi);
-      }
-
-      const trackCount = clamp(Math.round(params.trackCount ?? 25), 5, 100);
-      const selected = candidates.slice(0, trackCount);
-      const playlistName = (params.playlistName?.trim() || derivePlaylistName(params.description)).slice(0, 100);
-      const playlistDescription = `Generated by pi from: ${params.description}`;
-      const created = await createPlaylist(config, playlistName, playlistDescription, selected);
-      const movedToFolder = isMacOS() ? await movePlaylistToFolder(pi, playlistName) : false;
-
-      let playbackMessage = "";
-      if (params.startPlaying && isMacOS()) {
-        try {
-          playbackMessage = `\n${await transport(pi, "play_playlist", { playlistName })}`;
-        } catch (error) {
-          playbackMessage = `\nPlaylist created, but local playback failed: ${error instanceof Error ? error.message : String(error)}`;
-        }
-      }
-
-      const preview = selected.slice(0, 10).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
-      const remainder = selected.length > 10 ? `\n...and ${selected.length - 10} more.` : "";
-
-      return {
-        content: [
-          {
-            type: "text",
-            text:
-              `Created Apple Music playlist \"${playlistName}\" with ${selected.length} tracks.` +
-              `\nPlaylist id: ${created.id}` +
-              `\nFolder: ${APPLE_MUSIC_FOLDER_NAME}${movedToFolder ? "" : " (pending sync to Music.app)"}` +
-              `\n\nTop picks:\n${preview}${remainder}${playbackMessage}`,
-          },
-        ],
-        details: {
-          playlistId: created.id,
-          playlistName,
-          playlistDescription,
-          playlistFolder: APPLE_MUSIC_FOLDER_NAME,
-          movedToFolder,
-          songs: selected.map((song) => ({
-            id: song.id,
-            name: song.attributes?.name,
-            artistName: song.attributes?.artistName,
-            albumName: song.attributes?.albumName,
-            genreNames: song.attributes?.genreNames,
-            url: song.attributes?.url,
-          })),
-        },
-      };
+      return createCuratedPlaylist(pi, config, params);
     },
   });
 
@@ -559,7 +923,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
       playlistName: Type.Optional(Type.String({ description: "Playlist name, required for play_playlist" })),
       volume: Type.Optional(Type.Number({ minimum: 0, maximum: 100, description: "Target volume for set_volume" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId: any, params: any) {
       const text = await transport(pi, params.action, { playlistName: params.playlistName, volume: params.volume });
       return {
         content: [{ type: "text", text }],
@@ -574,7 +938,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("apple-music-help", {
     description: "Show Apple Music extension setup and usage hints",
-    handler: async (_args, ctx) => {
+    handler: async (_args: any, ctx: any) => {
       const config = await loadConfig(ctx.cwd);
       const lines = [
         "Apple Music extension",
@@ -611,7 +975,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
   ) => {
     pi.registerCommand(name, {
       description,
-      handler: async (args, ctx) => {
+      handler: async (args: any, ctx: any) => {
         const extra = parse?.(args) ?? {};
         const result = await transport(pi, action, extra);
         ctx.ui.notify(result, "info");
@@ -627,7 +991,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("apple-music-shuffle", {
     description: "Set Apple Music shuffle on or off: /apple-music-shuffle on|off",
-    handler: async (args, ctx) => {
+    handler: async (args: any, ctx: any) => {
       const mode = args.trim().toLowerCase();
       if (mode !== "on" && mode !== "off") {
         ctx.ui.notify("Usage: /apple-music-shuffle on|off", "warning");
@@ -640,7 +1004,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("apple-music-repeat", {
     description: "Set Apple Music repeat mode: /apple-music-repeat off|one|all",
-    handler: async (args, ctx) => {
+    handler: async (args: any, ctx: any) => {
       const mode = args.trim().toLowerCase();
       if (mode !== "off" && mode !== "one" && mode !== "all") {
         ctx.ui.notify("Usage: /apple-music-repeat off|one|all", "warning");
@@ -654,7 +1018,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("apple-music-make", {
     description: "Create an Apple Music playlist from a text description",
-    handler: async (args, ctx) => {
+    handler: async (args: any, ctx: any) => {
       const description = args.trim();
       if (!description) {
         ctx.ui.notify("Usage: /apple-music-make <description>", "warning");
@@ -663,23 +1027,9 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
 
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
-      const candidates = await searchSongs(config, description);
-      const selected = candidates.slice(0, 25);
-      if (selected.length === 0) {
-        throw new Error(`No Apple Music songs matched: ${description}`);
-      }
-
-      if (isMacOS()) {
-        await ensurePlaylistFolder(pi);
-      }
-
-      const playlistName = derivePlaylistName(description);
-      const created = await createPlaylist(config, playlistName, `Generated by pi from: ${description}`, selected);
-      const movedToFolder = isMacOS() ? await movePlaylistToFolder(pi, playlistName) : false;
-      ctx.ui.notify(
-        `Created playlist \"${playlistName}\" (${created.id}) with ${selected.length} tracks in ${APPLE_MUSIC_FOLDER_NAME}${movedToFolder ? "" : " (pending sync to Music.app)"}.`,
-        "info",
-      );
+      const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 });
+      const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
+      ctx.ui.notify(text, "info");
     },
   });
 }
