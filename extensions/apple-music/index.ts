@@ -4,24 +4,28 @@ import { Type } from "@sinclair/typebox";
 
 import { ensureApiConfig, loadConfig, buildStoredPlaylistDescription, writeProposalFile, updateProposalFile, loadProposal, summarizeSkippedTracks, candidateToSerializable } from "./config.js";
 import type {
-  AppleMusicAlbum,
-  AppleMusicArtist,
   AppleMusicConfig,
-  AppleMusicPlaylist,
   AppleMusicSong,
   CandidateSong,
-  CreatePlaylistResponse,
-  LibraryPlaylistFolder,
-  LibraryPlaylistFoldersResponse,
   PlannerRuntime,
   PlaylistPlan,
-  SearchResponse,
-  TracksResponse,
 } from "./types.js";
-import { buildPlaylistPlan, detectDiscographyIntent } from "./planner.js";
+import {
+  createPlaylist,
+  fetchAlbumTracks,
+  fetchArtistAlbums,
+  fetchArtistTopSongs,
+  fetchPlaylistTracks,
+  findOrCreateLibraryPlaylistFolderId,
+  isEditorialAlbum,
+  isEditorialPlaylist,
+  searchCatalog,
+  trackCandidate,
+} from "./catalog.js";
+import { buildPlaylistPlan } from "./planner.js";
 import {
   annotateFacetMatches,
-  buildDiscographySelection,
+  buildDiscographySelectionForPlan,
   buildSongHaystack,
   canonicalTrackSignature,
   classifyReleaseType,
@@ -32,6 +36,7 @@ import {
   songArtistIncludesTarget,
   summarizeCandidateSignals,
 } from "./selection.js";
+import { ensurePlaylistFolder, esc, movePlaylistToFolder, transport } from "./transport.js";
 import {
   appendAssistantTextMessage,
   clamp,
@@ -67,90 +72,6 @@ const TRANSPORT_ACTIONS = [
   "play_playlist",
   "status",
 ] as const;
-
-async function appleMusicRequest<T>(path: string, config: Required<AppleMusicConfig>, init?: RequestInit): Promise<T> {
-  const response = await fetch(`https://api.music.apple.com${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${config.developerToken}`,
-      "Music-User-Token": config.musicUserToken,
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`Apple Music API error ${response.status}: ${body}`);
-  }
-
-  if (!body.trim()) {
-    return undefined as T;
-  }
-
-  return JSON.parse(body) as T;
-}
-
-async function searchCatalog(
-  config: Required<AppleMusicConfig>,
-  term: string,
-  types: Array<"songs" | "artists" | "albums" | "playlists">,
-  limit = 10,
-): Promise<SearchResponse> {
-  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/search?term=${encodeURIComponent(term)}&types=${types.join(",")}&limit=${limit}`;
-  return appleMusicRequest<SearchResponse>(path, config);
-}
-
-async function fetchArtistTopSongs(config: Required<AppleMusicConfig>, artistId: string, limit = 5): Promise<AppleMusicSong[]> {
-  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/artists/${encodeURIComponent(artistId)}/view/top-songs?limit=${limit}`;
-  const response = await appleMusicRequest<TracksResponse>(path, config);
-  return (response.data ?? []).filter((song) => song.type === "songs");
-}
-
-async function fetchArtistAlbums(config: Required<AppleMusicConfig>, artistId: string, limit = 100): Promise<AppleMusicAlbum[]> {
-  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/artists/${encodeURIComponent(artistId)}/albums?limit=${limit}`;
-  const response = await appleMusicRequest<{ data?: AppleMusicAlbum[] }>(path, config);
-  return response.data ?? [];
-}
-
-async function fetchAlbumTracks(config: Required<AppleMusicConfig>, albumId: string, limit = 6): Promise<AppleMusicSong[]> {
-  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/albums/${encodeURIComponent(albumId)}/tracks?limit=${limit}`;
-  const response = await appleMusicRequest<TracksResponse>(path, config);
-  return (response.data ?? []).filter((song) => song.type === "songs");
-}
-
-async function fetchPlaylistTracks(config: Required<AppleMusicConfig>, playlistId: string, limit = 12): Promise<AppleMusicSong[]> {
-  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/playlists/${encodeURIComponent(playlistId)}/tracks?limit=${limit}`;
-  const response = await appleMusicRequest<TracksResponse>(path, config);
-  return (response.data ?? []).filter((song) => song.type === "songs");
-}
-
-function trackCandidate(map: Map<string, CandidateSong>, song: AppleMusicSong): CandidateSong {
-  const existing = map.get(song.id);
-  if (existing) return existing;
-
-  const created: CandidateSong = {
-    song,
-    directSongHits: 0,
-    artistTopSongHits: 0,
-    albumTrackHits: 0,
-    playlistTrackHits: 0,
-    editorialAlbumHits: 0,
-    editorialPlaylistHits: 0,
-    seedArtistHits: 0,
-    relatedArtistHits: 0,
-    queryMatches: new Set<string>(),
-    genresMatched: new Set<string>(),
-    facetMatches: new Set<string>(),
-    reasons: new Set<string>(),
-    sourceReleaseName: undefined,
-    sourceReleaseType: undefined,
-    score: 0,
-  };
-  map.set(song.id, created);
-  return created;
-}
 
 async function collectDirectSongCandidates(
   config: Required<AppleMusicConfig>,
@@ -198,15 +119,6 @@ async function collectArtistCandidates(
       }
     }
   }
-}
-
-function isEditorialPlaylist(playlist: AppleMusicPlaylist): boolean {
-  const curator = normalizeText(playlist.attributes?.curatorName ?? "");
-  return curator.includes("apple music") || Boolean(playlist.attributes?.editorialNotes?.standard || playlist.attributes?.description?.standard);
-}
-
-function isEditorialAlbum(album: AppleMusicAlbum): boolean {
-  return Boolean(album.attributes?.editorialNotes?.standard || album.attributes?.editorialNotes?.short);
 }
 
 async function collectAlbumCandidates(
@@ -334,253 +246,6 @@ async function curateSongs(
   return { plan, candidates: ranked };
 }
 
-async function fetchLibraryPlaylistFolders(config: Required<AppleMusicConfig>, limit = 100): Promise<LibraryPlaylistFolder[]> {
-  const response = await appleMusicRequest<LibraryPlaylistFoldersResponse>(`/v1/me/library/playlist-folders?limit=${limit}`, config);
-  return response.data ?? [];
-}
-
-async function createLibraryPlaylistFolder(config: Required<AppleMusicConfig>, name: string): Promise<LibraryPlaylistFolder> {
-  const response = await appleMusicRequest<LibraryPlaylistFoldersResponse>("/v1/me/library/playlist-folders", config, {
-    method: "POST",
-    body: JSON.stringify({
-      attributes: {
-        name,
-      },
-    }),
-  });
-
-  const folder = response.data?.[0];
-  if (!folder?.id) {
-    throw new Error("Apple Music did not return a playlist folder id.");
-  }
-  return folder;
-}
-
-async function findOrCreateLibraryPlaylistFolderId(config: Required<AppleMusicConfig>, name: string): Promise<string | undefined> {
-  const cacheKey = normalizeText(name);
-  const cached = PLAYLIST_FOLDER_ID_CACHE.get(cacheKey);
-  if (cached) return cached;
-
-  try {
-    const existing = (await fetchLibraryPlaylistFolders(config)).find((folder) => normalizeText(folder.attributes?.name ?? "") === cacheKey);
-    if (existing?.id) {
-      PLAYLIST_FOLDER_ID_CACHE.set(cacheKey, existing.id);
-      return existing.id;
-    }
-
-    const created = await createLibraryPlaylistFolder(config, name);
-    PLAYLIST_FOLDER_ID_CACHE.set(cacheKey, created.id);
-    return created.id;
-  } catch {
-    return undefined;
-  }
-}
-
-async function createPlaylist(
-  config: Required<AppleMusicConfig>,
-  name: string,
-  description: string,
-  songs: AppleMusicSong[],
-  parentFolderId?: string,
-): Promise<{ id: string; songs: AppleMusicSong[] }> {
-  const createResponse = await appleMusicRequest<CreatePlaylistResponse>("/v1/me/library/playlists", config, {
-    method: "POST",
-    body: JSON.stringify({
-      attributes: {
-        name,
-        description,
-      },
-      ...(parentFolderId
-        ? {
-            relationships: {
-              parent: {
-                data: [{ id: parentFolderId, type: "library-playlist-folders" }],
-              },
-            },
-          }
-        : {}),
-    }),
-  });
-
-  const playlistId = createResponse.data?.[0]?.id;
-  if (!playlistId) {
-    throw new Error("Apple Music did not return a playlist id.");
-  }
-
-  await appleMusicRequest(`/v1/me/library/playlists/${encodeURIComponent(playlistId)}/tracks`, config, {
-    method: "POST",
-    body: JSON.stringify({
-      data: songs.map((song) => ({ id: song.id, type: "songs" })),
-    }),
-  });
-
-  return { id: playlistId, songs };
-}
-
-async function runAppleScript(pi: ExtensionAPI, lines: string[]): Promise<string> {
-  if (!isMacOS()) {
-    throw new Error("Local Apple Music control currently requires macOS.");
-  }
-
-  const args = lines.flatMap((line) => ["-e", line]);
-  const result = await pi.exec("osascript", args);
-  if (result.code !== 0) {
-    throw new Error(result.stderr || result.stdout || "osascript failed");
-  }
-  return result.stdout.trim();
-}
-
-function esc(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function ensurePlaylistFolder(pi: ExtensionAPI, folderName = APPLE_MUSIC_FOLDER_NAME): Promise<void> {
-  const name = esc(folderName);
-  await runAppleScript(pi, [
-    'tell application "Music"',
-    `if not (exists folder playlist "${name}") then`,
-    `make new folder playlist with properties {name:"${name}"}`,
-    "end if",
-    'end tell',
-  ]);
-}
-
-async function movePlaylistToFolder(
-  pi: ExtensionAPI,
-  playlistName: string,
-  folderName = APPLE_MUSIC_FOLDER_NAME,
-  options?: { attempts?: number; delayMs?: number; initialDelayMs?: number },
-): Promise<boolean> {
-  const playlist = esc(playlistName);
-  const folder = esc(folderName);
-  const attempts = Math.max(1, options?.attempts ?? APPLE_MUSIC_MOVE_ATTEMPTS);
-  const delayMs = Math.max(0, options?.delayMs ?? APPLE_MUSIC_MOVE_RETRY_DELAY_MS);
-  const initialDelayMs = Math.max(0, options?.initialDelayMs ?? APPLE_MUSIC_MOVE_INITIAL_DELAY_MS);
-
-  if (initialDelayMs > 0) {
-    await delay(initialDelayMs);
-  }
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const output = await runAppleScript(pi, [
-      'tell application "Music"',
-      `if not (exists folder playlist "${folder}") then`,
-      `make new folder playlist with properties {name:"${folder}"}`,
-      "end if",
-      `if exists user playlist "${playlist}" then`,
-      `set targetPlaylist to first user playlist whose name is "${playlist}"`,
-      `move targetPlaylist to folder playlist "${folder}"`,
-      'return "moved"',
-      "end if",
-      'return "missing"',
-      'end tell',
-    ]);
-
-    if (output === "moved") return true;
-    if (attempt < attempts - 1) await delay(delayMs);
-  }
-
-  return false;
-}
-
-async function transport(pi: ExtensionAPI, action: (typeof TRANSPORT_ACTIONS)[number], options?: { playlistName?: string; volume?: number }) {
-  switch (action) {
-    case "play":
-      await runAppleScript(pi, ['tell application "Music" to play']);
-      return "Apple Music is playing.";
-    case "pause":
-      await runAppleScript(pi, ['tell application "Music" to pause']);
-      return "Apple Music is paused.";
-    case "playpause":
-      await runAppleScript(pi, ['tell application "Music" to playpause']);
-      return "Toggled Apple Music play/pause.";
-    case "next":
-      await runAppleScript(pi, ['tell application "Music" to next track']);
-      return "Skipped to the next track.";
-    case "previous":
-      await runAppleScript(pi, ['tell application "Music" to previous track']);
-      return "Went back to the previous track.";
-    case "stop":
-      await runAppleScript(pi, ['tell application "Music" to stop']);
-      return "Stopped Apple Music playback.";
-    case "shuffle_on":
-      await runAppleScript(pi, ['tell application "Music" to set shuffle enabled to true']);
-      return "Shuffle is on.";
-    case "shuffle_off":
-      await runAppleScript(pi, ['tell application "Music" to set shuffle enabled to false']);
-      return "Shuffle is off.";
-    case "shuffle_toggle": {
-      const output = await runAppleScript(pi, [
-        'tell application "Music"',
-        'set shuffle enabled to not shuffle enabled',
-        'return shuffle enabled as text',
-        'end tell',
-      ]);
-      return `Shuffle is now ${output}.`;
-    }
-    case "repeat_off":
-      await runAppleScript(pi, ['tell application "Music" to set song repeat to off']);
-      return "Repeat is off.";
-    case "repeat_one":
-      await runAppleScript(pi, ['tell application "Music" to set song repeat to one']);
-      return "Repeat is set to one.";
-    case "repeat_all":
-      await runAppleScript(pi, ['tell application "Music" to set song repeat to all']);
-      return "Repeat is set to all.";
-    case "set_volume": {
-      const volume = clamp(Math.round(options?.volume ?? 50), 0, 100);
-      await runAppleScript(pi, [`tell application "Music" to set sound volume to ${volume}`]);
-      return `Volume set to ${volume}.`;
-    }
-    case "play_playlist": {
-      if (!options?.playlistName) throw new Error("playlistName is required for play_playlist.");
-      const name = esc(options.playlistName);
-      const folder = esc(APPLE_MUSIC_FOLDER_NAME);
-      await runAppleScript(pi, [
-        'tell application "Music"',
-        'set targetPlaylist to missing value',
-        `if exists user playlist "${name}" then`,
-        `set targetPlaylist to first user playlist whose name is "${name}"`,
-        `else if (exists folder playlist "${folder}") and (exists (first user playlist of folder playlist "${folder}" whose name is "${name}")) then`,
-        `set targetPlaylist to first user playlist of folder playlist "${folder}" whose name is "${name}"`,
-        'else',
-        'error "Playlist not found."',
-        'end if',
-        'play targetPlaylist',
-        'end tell',
-      ]);
-      return `Playing playlist \"${options.playlistName}\".`;
-    }
-    case "status": {
-      const output = await runAppleScript(pi, [
-        'tell application "Music"',
-        'set trackName to ""',
-        'set artistName to ""',
-        'set albumName to ""',
-        'if (player state is playing) or (player state is paused) then',
-        'set currentSong to current track',
-        'set trackName to name of currentSong',
-        'set artistName to artist of currentSong',
-        'set albumName to album of currentSong',
-        'end if',
-        'return (player state as text) & "||" & (sound volume as text) & "||" & trackName & "||" & artistName & "||" & albumName',
-        'end tell',
-      ]);
-      const [state = "unknown", volume = "", track = "", artist = "", album = ""] = output.split("||");
-      const parts = [`State: ${state}`];
-      if (volume) parts.push(`Volume: ${volume}`);
-      if (track) parts.push(`Track: ${track}`);
-      if (artist) parts.push(`Artist: ${artist}`);
-      if (album) parts.push(`Album: ${album}`);
-      return parts.join("\n");
-    }
-  }
-}
-
 function buildPreviewCacheKey(params: { description: string; playlistName?: string; trackCount?: number }): string {
   return `${normalizeText(params.description)}::${normalizeText(params.playlistName ?? "")}::${Math.round(params.trackCount ?? 25)}`;
 }
@@ -599,7 +264,7 @@ async function buildCuratedPlaylistPreview(
   const trackCount = Math.max(5, requestedTrackCount);
   const selectionSeed = params.selectionSeed ?? `${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`;
   const selectionSeedKey = `${params.description}::${params.playlistName ?? ""}::${trackCount}::${selectionSeed}`;
-  const discographySelection = plan.discographyIntent ? buildDiscographySelection(candidates, plan) : undefined;
+  const discographySelection = plan.discographyIntent ? buildDiscographySelectionForPlan(candidates, plan) : undefined;
   const selectedCandidates = discographySelection?.selectedCandidates ?? selectPlaylistSongs(candidates, trackCount, selectionSeedKey, plan);
   if (selectedCandidates.length === 0) {
     throw new Error(`No Apple Music songs matched: ${params.description}`);
@@ -754,7 +419,15 @@ async function createCuratedPlaylist(
   }
 
   const created = await createPlaylist(config, playlistName, playlistDescription, selected, parentFolderId);
-  const movedToFolder = parentFolderId ? true : isMacOS() ? await movePlaylistToFolder(pi, playlistName) : false;
+  const movedToFolder = parentFolderId
+    ? true
+    : isMacOS()
+      ? await movePlaylistToFolder(pi, playlistName, APPLE_MUSIC_FOLDER_NAME, {
+          attempts: APPLE_MUSIC_MOVE_ATTEMPTS,
+          delayMs: APPLE_MUSIC_MOVE_RETRY_DELAY_MS,
+          initialDelayMs: APPLE_MUSIC_MOVE_INITIAL_DELAY_MS,
+        })
+      : false;
   if (previewData.proposalPath) {
     await updateProposalFile(previewData.proposalPath, {
       updatedAt: new Date().toISOString(),
@@ -770,7 +443,7 @@ async function createCuratedPlaylist(
   let playbackMessage = "";
   if (params.startPlaying && isMacOS()) {
     try {
-      playbackMessage = `\n${await transport(pi, "play_playlist", { playlistName })}`;
+      playbackMessage = `\n${await transport(pi, APPLE_MUSIC_FOLDER_NAME, "play_playlist", { playlistName })}`;
     } catch (error) {
       playbackMessage = `\nPlaylist created, but local playback failed: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -901,7 +574,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
       volume: Type.Optional(Type.Number({ minimum: 0, maximum: 100, description: "Target volume for set_volume" })),
     }),
     async execute(_toolCallId: any, params: any) {
-      const text = await transport(pi, params.action, { playlistName: params.playlistName, volume: params.volume });
+      const text = await transport(pi, APPLE_MUSIC_FOLDER_NAME, params.action, { playlistName: params.playlistName, volume: params.volume });
       return {
         content: [{ type: "text", text }],
         details: {
@@ -958,7 +631,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
       description,
       handler: async (args: any, ctx: any) => {
         const extra = parse?.(args) ?? {};
-        const result = await transport(pi, action, extra);
+        const result = await transport(pi, APPLE_MUSIC_FOLDER_NAME, action, extra);
         ctx.ui.notify(result, "info");
       },
     });
@@ -978,7 +651,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /apple-music-shuffle on|off", "warning");
         return;
       }
-      const result = await transport(pi, mode === "on" ? "shuffle_on" : "shuffle_off");
+      const result = await transport(pi, APPLE_MUSIC_FOLDER_NAME, mode === "on" ? "shuffle_on" : "shuffle_off");
       ctx.ui.notify(result, "info");
     },
   });
@@ -992,7 +665,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
       const action = mode === "off" ? "repeat_off" : mode === "one" ? "repeat_one" : "repeat_all";
-      const result = await transport(pi, action);
+      const result = await transport(pi, APPLE_MUSIC_FOLDER_NAME, action);
       ctx.ui.notify(result, "info");
     },
   });

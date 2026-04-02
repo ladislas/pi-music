@@ -1,49 +1,11 @@
 import { complete, type UserMessage } from "@mariozechner/pi-ai";
 
+import { detectDiscographyIntent } from "./discography-logic.js";
 import { GENRE_SEED_MAP, type SeedGenreEntry } from "./genre-seeds.js";
 import type { PlannerRuntime, PlaylistPlan, PlaylistPlannerSuggestion } from "./types.js";
 import { DISCOVERY_PATTERNS, STARTER_PATTERNS, containsNormalizedPhrase, hasPattern, normalizeText, splitPromptSegments, tokenize, unique } from "./utils.js";
 
-export function detectDiscographyIntent(description: string): { discographyIntent: boolean; strictArtistOnly: boolean; targetArtist?: string } {
-  const normalized = normalizeText(description);
-  const discographyIntent = /(all (the )?(songs|tracks|albums)|every song|complete playlist|complete discography|discography|all available tracks|all albums|all eps|all singles)/i.test(
-    description,
-  );
-  const strictArtistOnly = /(only songs by|only recordings by|do not include other artists|only the artist|all the .* songs)/i.test(description);
-
-  const artistPatterns = [
-    /all songs by\s+([^,.;]+)/i,
-    /every song by\s+([^,.;]+)/i,
-    /only songs by\s+([^,.;]+)/i,
-    /only recordings by(?: the artist)?\s+([^,.;]+)/i,
-    /all available tracks from\s+([^,.;]+)/i,
-    /complete (?:playlist|discography)(?: of| for)?\s+([^,.;]+)/i,
-    /all the\s+([^,.;]+?)\s+songs/i,
-  ];
-
-  let targetArtist: string | undefined;
-  for (const pattern of artistPatterns) {
-    const match = description.match(pattern);
-    if (match?.[1]) {
-      targetArtist = match[1].replace(/^(the artist )/i, "").trim();
-      break;
-    }
-  }
-
-  if (!targetArtist && discographyIntent) {
-    const fallback = normalized
-      .replace(/.*(?:by|of|from)\s+/, "")
-      .split(/[,.;]/)[0]
-      ?.trim();
-    if (fallback) targetArtist = fallback;
-  }
-
-  return {
-    discographyIntent,
-    strictArtistOnly,
-    targetArtist: targetArtist ? targetArtist.replace(/^all the\s+/i, "").trim() : undefined,
-  };
-}
+export { detectDiscographyIntent };
 
 export function buildPromptFacets(description: string, matchedEntries: SeedGenreEntry[], inferredGenres: string[], moods: string[]): string[] {
   const rawSegments = splitPromptSegments(description).map((segment) => normalizeText(segment));

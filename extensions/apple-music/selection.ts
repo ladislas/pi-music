@@ -1,3 +1,4 @@
+import { buildDiscographySelection, classifyReleaseType, hasVersionMarker, shouldIncludeAllSingles, shouldIncludeAlternateVersions, songArtistIncludesTarget } from "./discography-logic.js";
 import type { CandidateSong, PlaylistPlan } from "./types.js";
 import { clamp, normalizeText } from "./utils.js";
 
@@ -145,37 +146,6 @@ function canonicalTrackSignature(candidate: CandidateSong): string {
   return canonicalizeTrackTitle(candidate.song.attributes?.name ?? "");
 }
 
-function classifyReleaseType(releaseName: string): "album" | "ep" | "single" | "other" {
-  const normalized = normalizeText(releaseName);
-  if (/\bep\b/.test(normalized)) return "ep";
-  if (/\bsingle\b/.test(normalized)) return "single";
-  return normalized ? "album" : "other";
-}
-
-function hasVersionMarker(title: string): boolean {
-  return /(live|acoustic|alternate|alt\b|remix|version|session|demo|instrumental|piano solo|duet|edit)/i.test(title);
-}
-
-function shouldIncludeAllSingles(plan: PlaylistPlan): boolean {
-  return /all singles|include singles|keep singles/.test(plan.normalizedDescription);
-}
-
-function shouldIncludeAlternateVersions(plan: PlaylistPlan): boolean {
-  return /live|acoustic|alternate|remix|version|session|demo|instrumental|duet/.test(plan.normalizedDescription);
-}
-
-export function songArtistIncludesTarget(songArtistName: string, targetArtistName: string): boolean {
-  const normalizedSongArtist = normalizeText(songArtistName);
-  const normalizedTargetArtist = normalizeText(targetArtistName);
-  if (!normalizedSongArtist || !normalizedTargetArtist) return false;
-  if (normalizedSongArtist === normalizedTargetArtist) return true;
-
-  const artistParts = normalizedSongArtist
-    .split(/,|&| feat\.? | featuring | with /)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return artistParts.includes(normalizedTargetArtist);
-}
 
 function canSelectCandidate(
   candidate: CandidateSong,
@@ -233,46 +203,14 @@ export function findUncoveredMajorFacets(plan: PlaylistPlan, selected: Candidate
   return buildMajorFacets(plan, trackCount).filter((facet) => !covered.has(facet));
 }
 
-export function buildDiscographySelection(
+export function buildDiscographySelectionForPlan(
   candidates: CandidateSong[],
   plan: PlaylistPlan,
 ): { selectedCandidates: CandidateSong[]; skippedCandidates: Array<CandidateSong & { skipReason: string }> } {
-  const includeAllSingles = shouldIncludeAllSingles(plan);
-  const includeAlternateVersions = shouldIncludeAlternateVersions(plan);
-  const selected: CandidateSong[] = [];
-  const skipped: Array<CandidateSong & { skipReason: string }> = [];
-  const selectedIds = new Set<string>();
-  const coreSignatures = new Set<string>();
-
-  const pushSelected = (candidate: CandidateSong) => {
-    if (selectedIds.has(candidate.song.id)) return;
-    selected.push(candidate);
-    selectedIds.add(candidate.song.id);
+  return buildDiscographySelection(candidates, plan, canonicalTrackSignature) as {
+    selectedCandidates: CandidateSong[];
+    skippedCandidates: Array<CandidateSong & { skipReason: string }>;
   };
-
-  const byReleaseType = (releaseType: "album" | "ep" | "single" | "other") =>
-    candidates.filter((candidate) => (candidate.sourceReleaseType ?? "other") === releaseType);
-
-  for (const candidate of [...byReleaseType("album"), ...byReleaseType("ep")]) {
-    pushSelected(candidate);
-    coreSignatures.add(canonicalTrackSignature(candidate));
-  }
-
-  for (const candidate of [...byReleaseType("single"), ...byReleaseType("other")]) {
-    const signature = canonicalTrackSignature(candidate);
-    const isAlternate = hasVersionMarker(candidate.song.attributes?.name ?? "") || hasVersionMarker(candidate.sourceReleaseName ?? "");
-    if (!includeAllSingles && coreSignatures.has(signature) && (!includeAlternateVersions || !isAlternate)) {
-      skipped.push({ ...candidate, skipReason: isAlternate ? "alternate-single-excluded" : "single-duplicate-of-album-or-ep" });
-      continue;
-    }
-    if (coreSignatures.has(signature) && isAlternate && !includeAlternateVersions) {
-      skipped.push({ ...candidate, skipReason: "alternate-version-excluded" });
-      continue;
-    }
-    pushSelected(candidate);
-  }
-
-  return { selectedCandidates: selected, skippedCandidates: skipped };
 }
 
 export function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, seedKey: string, plan: PlaylistPlan): CandidateSong[] {
@@ -389,4 +327,4 @@ export function selectPlaylistSongs(candidates: CandidateSong[], trackCount: num
   return finalized;
 }
 
-export { classifyReleaseType };
+export { classifyReleaseType, songArtistIncludesTarget };
