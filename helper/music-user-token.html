@@ -39,6 +39,32 @@
         padding: 18px;
         margin: 16px 0;
       }
+      .steps {
+        padding-left: 20px;
+      }
+      .steps li + li {
+        margin-top: 8px;
+      }
+      .small {
+        font-size: 0.94rem;
+      }
+      .pill {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: #0d1016;
+        color: var(--muted);
+        font-size: 0.8rem;
+        margin-left: 8px;
+      }
+      ul.links {
+        margin: 10px 0 0;
+        padding-left: 20px;
+      }
+      ul.links li + li {
+        margin-top: 6px;
+      }
       label {
         display: block;
         font-weight: 600;
@@ -120,19 +146,67 @@
   </head>
   <body>
     <div class="wrap">
-      <h1>Apple Music User Token Helper</h1>
+      <h1>Apple Music User Token Helper <span class="pill">local setup</span></h1>
       <p class="muted">
         Use this page to sign in with Apple Music in your browser and extract the <strong>Music User Token</strong>
         needed by this pi extension.
       </p>
 
       <div class="card">
-        <h2>Before you start</h2>
-        <ol>
-          <li>Create or already have an Apple Music <strong>developer token</strong>.</li>
-          <li>In Apple Music API settings, allow your origin if needed. For local use, try <code>http://localhost:8787</code>.</li>
-          <li>Make sure you are signed into an Apple account with an active Apple Music subscription.</li>
+        <h2>What this page helps you do</h2>
+        <p class="small muted">
+          This project is currently local-only. You bring your own Apple Music API credentials, then this page helps you
+          finish the browser sign-in flow and copy the final <code>musicUserToken</code>.
+        </p>
+        <ol class="steps">
+          <li>Create or locate your Apple Music / MusicKit setup in the Apple Developer portal.</li>
+          <li>Create a MusicKit private key and download the <code>.p8</code> file.</li>
+          <li>Copy your <strong>Team ID</strong> and <strong>Key ID</strong>.</li>
+          <li>Generate a <strong>developer token</strong> with the script in this repo.</li>
+          <li>Paste that developer token into this page.</li>
+          <li>Click <strong>Configure MusicKit</strong>, then <strong>Sign in &amp; get user token</strong>.</li>
+          <li>Copy the generated config and save it to <code>.pi/apple-music.json</code>.</li>
         </ol>
+      </div>
+
+      <div class="card">
+        <h2>Before you start</h2>
+        <ol class="steps">
+          <li>You need an Apple Developer account.</li>
+          <li>You need an Apple account with an active Apple Music subscription.</li>
+          <li>If your Apple Music web configuration requires allowed origins, add <code>http://localhost:8787</code>.</li>
+          <li>If browser sign-in is blocked, try Safari and allow popups.</li>
+        </ol>
+
+        <ul class="links">
+          <li><a href="https://developer.apple.com/account/" target="_blank" rel="noreferrer">Apple Developer account</a></li>
+          <li><a href="https://developer.apple.com/account/resources/" target="_blank" rel="noreferrer">Certificates, Identifiers &amp; Profiles</a></li>
+          <li><a href="https://developer.apple.com/musickit/" target="_blank" rel="noreferrer">MusicKit overview</a></li>
+          <li><a href="https://developer.apple.com/documentation/applemusicapi" target="_blank" rel="noreferrer">Apple Music API docs</a></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>Apple Developer setup checklist</h2>
+        <ol class="steps">
+          <li>Open the Apple Developer portal.</li>
+          <li>Create or choose the app / identifier you want to use with MusicKit.</li>
+          <li>Enable Apple Music / MusicKit for that app configuration if required in your setup.</li>
+          <li>Add <code>http://localhost:8787</code> as an allowed origin if needed.</li>
+          <li>Create a MusicKit key.</li>
+          <li>Copy the <strong>Key ID</strong>.</li>
+          <li>Copy your <strong>Team ID</strong>.</li>
+          <li>Download the private key file (<code>.p8</code>) and keep it safe.</li>
+        </ol>
+      </div>
+
+      <div class="card">
+        <h2>Generate your developer token</h2>
+        <p class="small muted">Run this in the repo before using the form below:</p>
+        <pre>npm run generate-developer-token -- \
+  --team-id &lt;APPLE_TEAM_ID&gt; \
+  --key-id &lt;APPLE_KEY_ID&gt; \
+  --private-key &lt;PATH_TO_AUTHKEY_P8&gt;</pre>
       </div>
 
       <div class="card row two">
@@ -179,6 +253,9 @@ cat > .pi/apple-music.json <<'EOF'
   "storefront": "us"
 }
 EOF</pre>
+        <p class="small muted">
+          You can also save the same config in <code>~/.pi/agent/apple-music.json</code> if you want it available across projects.
+        </p>
       </div>
     </div>
 
@@ -257,13 +334,13 @@ EOF</pre>
           refreshPreview();
 
           if (token) {
-            setStatus("Success. Music User Token obtained.", "ok");
+            setStatus("Success. Music User Token obtained. Copy the config snippet below into .pi/apple-music.json.", "ok");
           } else {
             setStatus("No token was returned.", "warn");
           }
         } catch (error) {
           setStatus(
-            `Authorization failed.\n\n${error?.message || String(error)}\n\nTips:\n- ensure localhost is allowed for your Apple Music app configuration\n- ensure you are signed into a subscribed Apple Music account\n- try Safari or a browser where Apple login popups are allowed`,
+            `Authorization failed.\n\n${error?.message || String(error)}\n\nTips:\n- ensure localhost is allowed for your Apple Music app configuration\n- ensure you are signed into a subscribed Apple Music account\n- confirm your developer token is valid and not expired\n- verify you used the correct Team ID, Key ID, and .p8 file when generating the developer token\n- try Safari or a browser where Apple login popups are allowed`,
             "error",
           );
         }

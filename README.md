@@ -1,6 +1,7 @@
 # Pi Apple Music Extension
 
 Pi extension that:
+
 - creates Apple Music playlists from natural-language descriptions
 - places generated playlists inside the `piMusic` playlist folder in Apple Music
 - controls the local Music app on macOS (`play`, `pause`, `next`, `previous`, shuffle/random, repeat, volume, playlist playback)
@@ -8,6 +9,7 @@ Pi extension that:
 ## What it can do
 
 Examples:
+
 - "Create an Apple Music playlist with tropical house, deep house, jazzy soulful tunes"
 - "Pause Apple Music"
 - "Skip this track"
@@ -16,49 +18,87 @@ Examples:
 
 ## Setup
 
+There are two setup levels:
+
+1. **Playback only**: works locally on macOS with no Apple developer setup.
+2. **Playlist creation**: requires Apple Music API credentials and a one-time Apple developer setup.
+
 ### 1) Local playback control
 Playback control works on **macOS** through AppleScript and the built-in **Music** app.
 
-No Apple Music web API token is needed for `play`, `pause`, `next`, `previous`, shuffle, repeat, or volume.
+No Apple Music web API token is needed for:
 
-### 2) Playlist creation via Apple Music API
-To create real playlists in your Apple Music account, configure:
+- `play`
+- `pause`
+- `next`
+- `previous`
+- shuffle
+- repeat
+- volume
+
+### 2) What playlist creation needs
+
+To create playlists in your Apple Music account, this extension needs:
+
+- a **developer token**
+- a **music user token**
+- your **storefront** (for example `us`, `fr`, `gb`)
 
 Generated playlists are organized under a `piMusic` folder in Apple Music. On macOS, the extension checks for that folder first and creates it automatically if it does not exist.
 
-- `developerToken`
-- `musicUserToken`
-- `storefront` (for example `us`, `fr`, `gb`)
+You can configure credentials in either:
 
-You can configure them in either:
 - environment variables
 - `.pi/apple-music.json`
 - `~/.pi/agent/apple-music.json`
 
 Environment variables override file values.
 
-#### Environment variables
+### 3) Easiest flow
 
-```bash
-export APPLE_MUSIC_DEVELOPER_TOKEN='...'
-export APPLE_MUSIC_USER_TOKEN='...'
-export APPLE_MUSIC_STOREFRONT='us'
-```
+If you want the shortest path, do this:
 
-#### Project config file
+1. Set up Apple Music API access in the Apple Developer portal
+2. Generate a developer token with the included script
+3. Run the local helper page
+4. Sign in with your Apple Music account in the browser
+5. Copy the generated `musicUserToken`
+6. Save both tokens into `.pi/apple-music.json`
 
-Copy the example file:
+### 4) Apple Developer portal steps
 
-```bash
-mkdir -p .pi
-cp .pi/apple-music.example.json .pi/apple-music.json
-```
+This extension is currently **local-only**. That means **you provide your own Apple Music API credentials**.
 
-Then fill in your Apple Music tokens.
+You will need:
 
-### 3) Generate an Apple Music developer token locally
+- an Apple Developer account
+- an Apple Music-capable app/service identifier setup in Apple Developer
+- a MusicKit key (`.p8`)
+- the key id
+- your Apple team id
+- an Apple account with an active Apple Music subscription
 
-This repo also includes a small helper script for generating a developer token from your Apple private key (`.p8`).
+Typical Apple setup flow:
+
+1. Open the Apple Developer portal
+2. Create or choose an identifier/app configuration that will be used for MusicKit
+3. Enable Apple Music / MusicKit for that app configuration if required
+4. Add `http://localhost:8787` as an allowed origin if your setup requires web authorization origins
+5. Create a **MusicKit private key**
+6. Copy the **Key ID**
+7. Copy your **Team ID**
+8. Download the `.p8` private key file and keep it somewhere safe
+
+Useful Apple pages:
+
+- Apple Developer account: <https://developer.apple.com/account/>
+- Certificates, Identifiers & Profiles: <https://developer.apple.com/account/resources/>
+- MusicKit docs: <https://developer.apple.com/musickit/>
+- Apple Music API docs: <https://developer.apple.com/documentation/applemusicapi>
+
+### 5) Generate the developer token locally
+
+This repo includes a helper script for generating a developer token from your Apple private key (`.p8`).
 
 Run:
 
@@ -66,7 +106,17 @@ Run:
 npm run generate-developer-token -- --team-id <APPLE_TEAM_ID> --key-id <APPLE_KEY_ID> --private-key <PATH_TO_AUTHKEY_P8> [--days 180]
 ```
 
+Example:
+
+```bash
+npm run generate-developer-token -- \
+  --team-id ABC123XYZ9 \
+  --key-id 1A2BC3D4E5 \
+  --private-key ~/Downloads/AuthKey_1A2BC3D4E5.p8
+```
+
 You can also provide these via environment variables:
+
 - `APPLE_TEAM_ID`
 - `APPLE_KEY_ID`
 - `APPLE_PRIVATE_KEY_PATH`
@@ -74,9 +124,9 @@ You can also provide these via environment variables:
 
 The script prints the JWT developer token to stdout.
 
-### 4) Get the Music User Token with the helper page
+### 6) Run the local helper page and get the Music User Token
 
-This repo now includes a small local helper page.
+This repo includes a local helper page that makes the browser-based Apple Music sign-in flow easier.
 
 Start it with:
 
@@ -90,17 +140,56 @@ Then open:
 http://localhost:8787/music-user-token.html
 ```
 
-What it does:
-- you paste your Apple Music developer token
-- it initializes MusicKit JS in the browser
-- you sign in with Apple Music
-- it returns the `musicUserToken`
-- it shows a ready-to-copy JSON config snippet
+The helper page explains the setup again and walks you through:
+
+- pasting your developer token
+- configuring MusicKit in the browser
+- signing into Apple Music
+- copying the returned `musicUserToken`
+- copying a ready-to-save JSON config snippet
 
 Important:
+
 - your Apple Music app configuration may need to allow `http://localhost:8787` as an origin
 - you need an Apple Music subscription on the Apple account you sign in with
 - if login fails, try Safari and make sure popups are allowed
+
+### 7) Save the config
+
+#### Environment variables
+
+```bash
+export APPLE_MUSIC_DEVELOPER_TOKEN='...'
+export APPLE_MUSIC_USER_TOKEN='...'
+export APPLE_MUSIC_STOREFRONT='us'
+```
+
+#### Project config file
+
+```bash
+mkdir -p .pi
+cat > .pi/apple-music.json <<'EOF'
+{
+  "developerToken": "PASTE_DEVELOPER_TOKEN_HERE",
+  "musicUserToken": "PASTE_MUSIC_USER_TOKEN_HERE",
+  "storefront": "us"
+}
+EOF
+```
+
+You can also store the same file in:
+
+```text
+~/.pi/agent/apple-music.json
+```
+
+### 8) Verify it works
+
+Once configured, try one of these:
+
+- "Create an Apple Music playlist with tropical house, deep house, jazzy soulful tunes"
+- `/apple-music-make tropical house, deep house, jazzy soulful tunes`
+- `/apple-music-status`
 
 ## Install in pi
 
@@ -121,6 +210,7 @@ pi -e ./extensions/apple-music/index.ts
 ## Usage inside pi
 
 Natural language:
+
 - "Create me a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Pause the music"
 - "Turn shuffle on and skip"
@@ -130,6 +220,7 @@ Natural language:
 When playlists are created through pi, they are intended to live inside the `piMusic` folder. If Apple Music library sync is delayed, a newly created playlist may briefly show as pending before it appears in Music.app and gets moved into the folder.
 
 Slash commands:
+
 - `/apple-music-help`
 - `/apple-music-status`
 - `/apple-music-play`
