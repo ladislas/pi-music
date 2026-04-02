@@ -1236,15 +1236,17 @@ async function collectDiscographyCandidates(
   if (!artist?.id) return;
 
   const artistName = artist.attributes?.name ?? plan.targetArtist;
+  const normalizedArtistName = normalizeText(artistName);
+  const requirePrimaryArtistMatch = plan.discographyIntent || plan.strictArtistOnly;
   const albums = await fetchArtistAlbums(config, artist.id, 100);
   for (const album of albums) {
     if (!album.id) continue;
     const tracks = await fetchAlbumTracks(config, album.id, 100);
     for (const song of tracks) {
+      const songArtist = normalizeText(song.attributes?.artistName ?? "");
+      if (requirePrimaryArtistMatch && songArtist !== normalizedArtistName) continue;
       const candidate = trackCandidate(candidates, song);
       annotateFacetMatches(candidate, plan);
-      const songArtist = normalizeText(song.attributes?.artistName ?? "");
-      if (plan.strictArtistOnly && songArtist !== normalizeText(artistName)) continue;
       candidate.albumTrackHits += 3;
       candidate.seedArtistHits += 2;
       candidate.queryMatches.add(plan.targetArtist);
@@ -1254,10 +1256,10 @@ async function collectDiscographyCandidates(
 
   const topSongs = await fetchArtistTopSongs(config, artist.id, 50);
   for (const song of topSongs) {
+    const songArtist = normalizeText(song.attributes?.artistName ?? "");
+    if (requirePrimaryArtistMatch && songArtist !== normalizedArtistName) continue;
     const candidate = trackCandidate(candidates, song);
     annotateFacetMatches(candidate, plan);
-    const songArtist = normalizeText(song.attributes?.artistName ?? "");
-    if (plan.strictArtistOnly && songArtist !== normalizeText(artistName)) continue;
     candidate.artistTopSongHits += 2;
     candidate.seedArtistHits += 2;
     candidate.queryMatches.add(plan.targetArtist);
@@ -1553,7 +1555,7 @@ async function buildCuratedPlaylistPreview(
     throw new Error(`No Apple Music songs matched: ${params.description}`);
   }
 
-  const trackCount = clamp(Math.round(params.trackCount ?? 25), 5, 100);
+  const trackCount = clamp(Math.round(params.trackCount ?? (plan.discographyIntent ? 100 : 25)), 5, 100);
   const selectionSeed = params.selectionSeed ?? `${Date.now()}-${Math.floor(Math.random() * 1_000_000_000)}`;
   const selectionSeedKey = `${params.description}::${params.playlistName ?? ""}::${trackCount}::${selectionSeed}`;
   const selectedCandidates = selectPlaylistSongs(candidates, trackCount, selectionSeedKey, plan);
@@ -1903,9 +1905,10 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Working on playlist preview...", "info");
         const config = await loadConfig(ctx.cwd);
         ensureApiConfig(config);
-        const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
         await appendAssistantTextMessage(ctx, text);
+        ctx.ui.notify(text, "info");
         ctx.ui.notify("Playlist preview ready.", "success");
       } catch (error) {
         ctx.ui.notify(`Playlist preview failed: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -1930,9 +1933,10 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Working on playlist preview...", "info");
         const config = await loadConfig(ctx.cwd);
         ensureApiConfig(config);
-        const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
         await appendAssistantTextMessage(ctx, text);
+        ctx.ui.notify(text, "info");
         ctx.ui.notify("Playlist preview ready.", "success");
       } catch (error) {
         ctx.ui.notify(`Playlist preview failed: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -1957,9 +1961,10 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Working on playlist creation...", "info");
         const config = await loadConfig(ctx.cwd);
         ensureApiConfig(config);
-        const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const result = await createCuratedPlaylist(pi, config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
         const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
         await appendAssistantTextMessage(ctx, text);
+        ctx.ui.notify(text, "info");
         ctx.ui.notify("Playlist created.", "success");
       } catch (error) {
         ctx.ui.notify(`Playlist creation failed: ${error instanceof Error ? error.message : String(error)}`, "error");
