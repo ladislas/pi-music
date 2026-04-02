@@ -1728,12 +1728,12 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /apple-music-playlist <description>", "warning");
         return;
       }
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Agent is busy. Try again when the current turn finishes.", "warning");
+        return;
+      }
 
-      const config = await loadConfig(ctx.cwd);
-      ensureApiConfig(config);
-      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry });
-      const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
-      ctx.ui.notify(text, "info");
+      pi.sendUserMessage(`Preview an Apple Music playlist with ${description}`);
     },
   });
 
@@ -1745,12 +1745,12 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /apple-music-preview <description>", "warning");
         return;
       }
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Agent is busy. Try again when the current turn finishes.", "warning");
+        return;
+      }
 
-      const config = await loadConfig(ctx.cwd);
-      ensureApiConfig(config);
-      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry });
-      const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
-      ctx.ui.notify(text, "info");
+      pi.sendUserMessage(`Preview an Apple Music playlist with ${description}`);
     },
   });
 
@@ -1762,12 +1762,12 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /apple-music-make <description>", "warning");
         return;
       }
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Agent is busy. Try again when the current turn finishes.", "warning");
+        return;
+      }
 
-      const config = await loadConfig(ctx.cwd);
-      ensureApiConfig(config);
-      const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry });
-      const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
-      ctx.ui.notify(text, "info");
+      pi.sendUserMessage(`Create an Apple Music playlist with ${description}`);
     },
   });
 }
