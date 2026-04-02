@@ -510,7 +510,18 @@ function scoreCandidate(songCandidate: CandidateSong, plan: PlaylistPlan): numbe
   return score;
 }
 
-  return score;
+function summarizeCandidateSignals(candidate: CandidateSong): string[] {
+  const signals: string[] = [];
+  if (candidate.editorialPlaylistHits > 0 || candidate.editorialAlbumHits > 0) {
+    signals.push(`editorial support: ${candidate.editorialPlaylistHits} playlists, ${candidate.editorialAlbumHits} albums`);
+  }
+  if (candidate.facetMatches.size > 0) {
+    signals.push(`facet matches: ${[...candidate.facetMatches].slice(0, 4).join(", ")}`);
+  }
+  if (candidate.seedArtistHits > 0) {
+    signals.push(`seed artist support: ${candidate.seedArtistHits}`);
+  }
+  return signals;
 }
 
 function hashSeed(value: string): number {
@@ -1141,7 +1152,7 @@ async function previewCuratedPlaylist(
         genreNames: candidate.song.attributes?.genreNames,
         url: candidate.song.attributes?.url,
         score: candidate.score,
-        reasons: [...candidate.reasons].slice(0, 4),
+        reasons: [...candidate.reasons, ...summarizeCandidateSignals(candidate)].slice(0, 6),
       })),
     },
   };
@@ -1215,7 +1226,7 @@ async function createCuratedPlaylist(
         genreNames: candidate.song.attributes?.genreNames,
         url: candidate.song.attributes?.url,
         score: candidate.score,
-        reasons: [...candidate.reasons].slice(0, 4),
+        reasons: [...candidate.reasons, ...summarizeCandidateSignals(candidate)].slice(0, 6),
       })),
     },
   };
