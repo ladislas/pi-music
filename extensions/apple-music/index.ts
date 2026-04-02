@@ -129,6 +129,9 @@ type PlaylistPlan = {
   optionalDirections: string[];
   clarifyingQuestions: string[];
   familiarArtists: string[];
+  discographyIntent: boolean;
+  strictArtistOnly: boolean;
+  targetArtist?: string;
   discoveryIntent: boolean;
   starterIntent: boolean;
   broadRequest: boolean;
@@ -393,6 +396,43 @@ function hasPattern(patterns: RegExp[], value: string): boolean {
   return patterns.some((pattern) => pattern.test(value));
 }
 
+function detectDiscographyIntent(description: string): { discographyIntent: boolean; strictArtistOnly: boolean; targetArtist?: string } {
+  const normalized = normalizeText(description);
+  const discographyIntent = /(all (the )?(songs|tracks|albums)|every song|complete playlist|complete discography|discography|all available tracks|all albums|all eps|all singles)/i.test(
+    description,
+  );
+  const strictArtistOnly = /(only songs by|only recordings by|do not include other artists|only the artist|all the .* songs)/i.test(description);
+
+  const artistPatterns = [
+    /(?:all (?:the )?(?:songs|tracks|albums)(?: and albums)?(?: by)?|every song by|complete (?:playlist|discography)(?: of| for)?|all available tracks from)\s+(.+?)$/i,
+    /playlist (?:only )?of recordings by the artist\s+(.+?)(?:,|\.|$)/i,
+    /only songs by\s+(.+?)(?:,|\.|$)/i,
+  ];
+
+  let targetArtist: string | undefined;
+  for (const pattern of artistPatterns) {
+    const match = description.match(pattern);
+    if (match?.[1]) {
+      targetArtist = match[1]
+        .replace(/^(the artist )/i, "")
+        .replace(/(?:make it bigger than.*|create now.*|preview now.*)$/i, "")
+        .trim();
+      break;
+    }
+  }
+
+  if (!targetArtist && discographyIntent) {
+    const quoted = description.match(/\b(?:by|of)\s+([A-Za-z0-9 .'&+-]{2,})/i)?.[1]?.trim();
+    if (quoted) targetArtist = quoted;
+  }
+
+  return {
+    discographyIntent,
+    strictArtistOnly,
+    targetArtist: targetArtist ? targetArtist.replace(/^all the\s+/i, "").trim() : undefined,
+  };
+}
+
 function buildPromptFacets(description: string, matchedEntries: SeedGenreEntry[], inferredGenres: string[], moods: string[]): string[] {
   const rawSegments = splitPromptSegments(description).map((segment) => normalizeText(segment));
   const matchedFacetAliases = matchedEntries.flatMap((entry) => [entry.canonicalGenre, ...(entry.aliases ?? []).slice(0, 2)]).map(normalizeText);
@@ -573,12 +613,16 @@ function mergePlaylistPlan(basePlan: PlaylistPlan, suggestion?: PlaylistPlannerS
     discoveryIntent: suggestion.discoveryIntent ?? basePlan.discoveryIntent,
     starterIntent: suggestion.starterIntent ?? basePlan.starterIntent,
     broadRequest: suggestion.broadRequest ?? basePlan.broadRequest,
+    discographyIntent: basePlan.discographyIntent,
+    strictArtistOnly: basePlan.strictArtistOnly,
+    targetArtist: basePlan.targetArtist,
   };
 }
 
 async function buildPlaylistPlan(description: string, runtime?: PlannerRuntime): Promise<PlaylistPlan> {
   const normalizedDescription = normalizeText(description);
   const matchedEntries: SeedGenreEntry[] = [];
+  const { discographyIntent, strictArtistOnly, targetArtist } = detectDiscographyIntent(description);
 
   for (const [genreKey, entry] of Object.entries(GENRE_SEED_MAP)) {
     const phrases = unique([genreKey, entry.canonicalGenre, ...(entry.aliases ?? [])].map(normalizeText));
@@ -651,6 +695,9 @@ async function buildPlaylistPlan(description: string, runtime?: PlannerRuntime):
     optionalDirections: [],
     clarifyingQuestions: [],
     familiarArtists: [],
+    discographyIntent,
+    strictArtistOnly,
+    targetArtist,
     discoveryIntent,
     starterIntent,
     broadRequest,
@@ -676,6 +723,12 @@ async function fetchArtistTopSongs(config: Required<AppleMusicConfig>, artistId:
   const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/artists/${encodeURIComponent(artistId)}/view/top-songs?limit=${limit}`;
   const response = await appleMusicRequest<TracksResponse>(path, config);
   return (response.data ?? []).filter((song) => song.type === "songs");
+}
+
+async function fetchArtistAlbums(config: Required<AppleMusicConfig>, artistId: string, limit = 100): Promise<AppleMusicAlbum[]> {
+  const path = `/v1/catalog/${encodeURIComponent(config.storefront)}/artists/${encodeURIComponent(artistId)}/albums?limit=${limit}`;
+  const response = await appleMusicRequest<{ data?: AppleMusicAlbum[] }>(path, config);
+  return response.data ?? [];
 }
 
 async function fetchAlbumTracks(config: Required<AppleMusicConfig>, albumId: string, limit = 6): Promise<AppleMusicSong[]> {
@@ -1133,6 +1186,49 @@ async function collectPlaylistCandidates(
   }
 }
 
+async function collectDiscographyCandidates(
+  config: Required<AppleMusicConfig>,
+  plan: PlaylistPlan,
+  candidates: Map<string, CandidateSong>,
+): Promise<void> {
+  if (!plan.targetArtist) return;
+
+  const response = await searchCatalog(config, plan.targetArtist, ["artists"], 5);
+  const normalizedTarget = normalizeText(plan.targetArtist);
+  const artist = (response.results?.artists?.data ?? []).find((item) => normalizeText(item.attributes?.name ?? "") === normalizedTarget) ??
+    (response.results?.artists?.data ?? [])[0];
+  if (!artist?.id) return;
+
+  const artistName = artist.attributes?.name ?? plan.targetArtist;
+  const albums = await fetchArtistAlbums(config, artist.id, 100);
+  for (const album of albums) {
+    if (!album.id) continue;
+    const tracks = await fetchAlbumTracks(config, album.id, 100);
+    for (const song of tracks) {
+      const candidate = trackCandidate(candidates, song);
+      annotateFacetMatches(candidate, plan);
+      const songArtist = normalizeText(song.attributes?.artistName ?? "");
+      if (plan.strictArtistOnly && songArtist !== normalizeText(artistName)) continue;
+      candidate.albumTrackHits += 3;
+      candidate.seedArtistHits += 2;
+      candidate.queryMatches.add(plan.targetArtist);
+      candidate.reasons.add(`discography: ${artistName}`);
+    }
+  }
+
+  const topSongs = await fetchArtistTopSongs(config, artist.id, 50);
+  for (const song of topSongs) {
+    const candidate = trackCandidate(candidates, song);
+    annotateFacetMatches(candidate, plan);
+    const songArtist = normalizeText(song.attributes?.artistName ?? "");
+    if (plan.strictArtistOnly && songArtist !== normalizeText(artistName)) continue;
+    candidate.artistTopSongHits += 2;
+    candidate.seedArtistHits += 2;
+    candidate.queryMatches.add(plan.targetArtist);
+    candidate.reasons.add(`artist catalog: ${artistName}`);
+  }
+}
+
 async function curateSongs(
   config: Required<AppleMusicConfig>,
   description: string,
@@ -1141,15 +1237,19 @@ async function curateSongs(
   const plan = await buildPlaylistPlan(description, runtime);
   const candidates = new Map<string, CandidateSong>();
 
-  await collectDirectSongCandidates(config, plan, candidates);
-  await collectArtistCandidates(config, plan, candidates);
-  await collectAlbumCandidates(config, plan, candidates);
-  await collectPlaylistCandidates(config, plan, candidates);
+  if (plan.discographyIntent && plan.targetArtist) {
+    await collectDiscographyCandidates(config, plan, candidates);
+  } else {
+    await collectDirectSongCandidates(config, plan, candidates);
+    await collectArtistCandidates(config, plan, candidates);
+    await collectAlbumCandidates(config, plan, candidates);
+    await collectPlaylistCandidates(config, plan, candidates);
+  }
 
   const ranked = [...candidates.values()]
     .map((candidate) => ({
       ...candidate,
-      score: scoreCandidate(candidate, plan),
+      score: scoreCandidate(candidate, plan) + (plan.discographyIntent ? 1000 : 0),
     }))
     .sort((a, b) => b.score - a.score);
 
@@ -1763,7 +1863,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
-      pi.sendUserMessage(`Preview an Apple Music playlist with ${description}`);
+      pi.sendUserMessage(description);
     },
   });
 
