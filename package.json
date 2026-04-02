@@ -8,7 +8,8 @@
     "extensions": ["./extensions"]
   },
   "scripts": {
-    "check": "echo 'No checks configured'",
+    "check": "npm run test",
+    "test": "node --test ./test/*.test.mjs",
     "token-helper": "node ./scripts/serve-token-helper.mjs",
     "generate-developer-token": "node ./scripts/generate-developer-token.mjs"
   },
