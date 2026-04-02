@@ -84,6 +84,20 @@ type CreatePlaylistResponse = {
   }>;
 };
 
+type LibraryPlaylistFolder = {
+  id: string;
+  type: string;
+  attributes?: {
+    name?: string;
+    description?: { standard?: string; short?: string };
+  };
+};
+
+type LibraryPlaylistFoldersResponse = {
+  data?: LibraryPlaylistFolder[];
+  next?: string;
+};
+
 type PlaylistPlannerSuggestion = {
   inferredGenres?: string[];
   facets?: string[];
@@ -148,6 +162,7 @@ const APPLE_MUSIC_MOVE_INITIAL_DELAY_MS = 10_000;
 const APPLE_MUSIC_MOVE_RETRY_DELAY_MS = 2_500;
 const APPLE_MUSIC_MOVE_ATTEMPTS = 4;
 const PREVIEW_PROPOSAL_CACHE = new Map<string, Awaited<ReturnType<typeof buildCuratedPlaylistPreview>>>();
+const PLAYLIST_FOLDER_ID_CACHE = new Map<string, string>();
 
 const TRANSPORT_ACTIONS = [
   "play",
@@ -1111,11 +1126,54 @@ async function curateSongs(
   return { plan, candidates: ranked };
 }
 
+async function fetchLibraryPlaylistFolders(config: Required<AppleMusicConfig>, limit = 100): Promise<LibraryPlaylistFolder[]> {
+  const response = await appleMusicRequest<LibraryPlaylistFoldersResponse>(`/v1/me/library/playlist-folders?limit=${limit}`, config);
+  return response.data ?? [];
+}
+
+async function createLibraryPlaylistFolder(config: Required<AppleMusicConfig>, name: string): Promise<LibraryPlaylistFolder> {
+  const response = await appleMusicRequest<LibraryPlaylistFoldersResponse>("/v1/me/library/playlist-folders", config, {
+    method: "POST",
+    body: JSON.stringify({
+      attributes: {
+        name,
+      },
+    }),
+  });
+
+  const folder = response.data?.[0];
+  if (!folder?.id) {
+    throw new Error("Apple Music did not return a playlist folder id.");
+  }
+  return folder;
+}
+
+async function findOrCreateLibraryPlaylistFolderId(config: Required<AppleMusicConfig>, name: string): Promise<string | undefined> {
+  const cacheKey = normalizeText(name);
+  const cached = PLAYLIST_FOLDER_ID_CACHE.get(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const existing = (await fetchLibraryPlaylistFolders(config)).find((folder) => normalizeText(folder.attributes?.name ?? "") === cacheKey);
+    if (existing?.id) {
+      PLAYLIST_FOLDER_ID_CACHE.set(cacheKey, existing.id);
+      return existing.id;
+    }
+
+    const created = await createLibraryPlaylistFolder(config, name);
+    PLAYLIST_FOLDER_ID_CACHE.set(cacheKey, created.id);
+    return created.id;
+  } catch {
+    return undefined;
+  }
+}
+
 async function createPlaylist(
   config: Required<AppleMusicConfig>,
   name: string,
   description: string,
   songs: AppleMusicSong[],
+  parentFolderId?: string,
 ): Promise<{ id: string; songs: AppleMusicSong[] }> {
   const createResponse = await appleMusicRequest<CreatePlaylistResponse>("/v1/me/library/playlists", config, {
     method: "POST",
@@ -1124,6 +1182,15 @@ async function createPlaylist(
         name,
         description,
       },
+      ...(parentFolderId
+        ? {
+            relationships: {
+              parent: {
+                data: [{ id: parentFolderId, type: "library-playlist-folders" }],
+              },
+            },
+          }
+        : {}),
     }),
   });
 
@@ -1418,12 +1485,14 @@ async function createCuratedPlaylist(
   const { plan, selectedCandidates, selected, playlistName, playlistDescription } = previewData;
   const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, previewData.trackCount);
 
-  if (isMacOS()) {
+  const parentFolderId = await findOrCreateLibraryPlaylistFolderId(config, APPLE_MUSIC_FOLDER_NAME);
+
+  if (!parentFolderId && isMacOS()) {
     await ensurePlaylistFolder(pi);
   }
 
-  const created = await createPlaylist(config, playlistName, playlistDescription, selected);
-  const movedToFolder = isMacOS() ? await movePlaylistToFolder(pi, playlistName) : false;
+  const created = await createPlaylist(config, playlistName, playlistDescription, selected, parentFolderId);
+  const movedToFolder = parentFolderId ? true : isMacOS() ? await movePlaylistToFolder(pi, playlistName) : false;
 
   let playbackMessage = "";
   if (params.startPlaying && isMacOS()) {
@@ -1463,6 +1532,7 @@ async function createCuratedPlaylist(
       playlistName,
       playlistDescription,
       playlistFolder: APPLE_MUSIC_FOLDER_NAME,
+      parentFolderId,
       movedToFolder,
       plan,
       selectionSeed: previewData.selectionSeed,
