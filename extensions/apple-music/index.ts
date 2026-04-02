@@ -1568,6 +1568,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         "/apple-music-prev",
         "/apple-music-shuffle on|off",
         "/apple-music-repeat off|one|all",
+        "/apple-music-playlist <description>",
         "/apple-music-preview <description>",
         "/apple-music-make <description>",
       ];
@@ -1624,6 +1625,23 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("apple-music-playlist", {
+    description: "Start collaborative Apple Music playlist planning from a text description",
+    handler: async (args: any, ctx: any) => {
+      const description = args.trim();
+      if (!description) {
+        ctx.ui.notify("Usage: /apple-music-playlist <description>", "warning");
+        return;
+      }
+
+      const config = await loadConfig(ctx.cwd);
+      ensureApiConfig(config);
+      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry });
+      const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
+      ctx.ui.notify(text, "info");
+    },
+  });
+
   pi.registerCommand("apple-music-preview", {
     description: "Preview an Apple Music playlist from a text description",
     handler: async (args: any, ctx: any) => {
@@ -1635,7 +1653,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
 
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
-      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 });
+      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry });
       const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
       ctx.ui.notify(text, "info");
     },
@@ -1652,7 +1670,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
 
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
-      const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 });
+      const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry });
       const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
       ctx.ui.notify(text, "info");
     },
