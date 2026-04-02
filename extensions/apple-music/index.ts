@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { StringEnum } from "@mariozechner/pi-ai";
+import { complete, StringEnum, type UserMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
@@ -84,6 +84,20 @@ type CreatePlaylistResponse = {
   }>;
 };
 
+type PlaylistPlannerSuggestion = {
+  inferredGenres?: string[];
+  facets?: string[];
+  queries?: string[];
+  seedArtists?: string[];
+  relatedArtists?: string[];
+  moods?: string[];
+  avoidTerms?: string[];
+  notes?: string[];
+  discoveryIntent?: boolean;
+  starterIntent?: boolean;
+  broadRequest?: boolean;
+};
+
 type PlaylistPlan = {
   originalDescription: string;
   normalizedDescription: string;
@@ -116,6 +130,11 @@ type CandidateSong = {
   facetMatches: Set<string>;
   reasons: Set<string>;
   score: number;
+};
+
+type PlannerRuntime = {
+  model?: any;
+  modelRegistry?: any;
 };
 
 const APPLE_MUSIC_FOLDER_NAME = "piMusic";
@@ -302,10 +321,17 @@ function songLabel(song: AppleMusicSong): string {
 function splitPromptSegments(description: string): string[] {
   return unique(
     description
-      .split(/[,;]+|\band\b/gi)
+      .split(/[,;]+/)
       .map((part) => part.trim())
       .filter((part) => normalizeText(part).length >= 3),
   );
+}
+
+function containsNormalizedPhrase(text: string, phrase: string): boolean {
+  const normalizedText = ` ${normalizeText(text)} `;
+  const normalizedPhrase = normalizeText(phrase);
+  if (!normalizedPhrase) return false;
+  return normalizedText.includes(` ${normalizedPhrase} `);
 }
 
 function hasPattern(patterns: RegExp[], value: string): boolean {
@@ -322,13 +348,150 @@ function buildPromptFacets(description: string, matchedEntries: SeedGenreEntry[]
     .slice(0, 8);
 }
 
-function buildPlaylistPlan(description: string): PlaylistPlan {
+function extractJsonObject(text: string): Record<string, unknown> | undefined {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end < start) return undefined;
+  try {
+    return JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+function asStringArray(value: unknown, maxItems = 12): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+async function getLlmPlaylistPlannerSuggestion(
+  description: string,
+  heuristicPlan: PlaylistPlan,
+  runtime?: PlannerRuntime,
+): Promise<PlaylistPlannerSuggestion | undefined> {
+  if (!runtime?.model || !runtime?.modelRegistry) return undefined;
+
+  const auth = await runtime.modelRegistry.getApiKeyAndHeaders(runtime.model);
+  if (!auth.ok || !auth.apiKey) return undefined;
+
+  const systemPrompt = `You are a music curation planner for Apple Music playlist generation.
+
+Your job is to convert a natural language request into a compact structured curation plan.
+Focus on semantic understanding, regions/scenes/cultures, vocal preferences, moods, and useful search queries.
+Do not explain anything. Return JSON only.
+
+Output JSON shape:
+{
+  "inferredGenres": string[],
+  "facets": string[],
+  "queries": string[],
+  "seedArtists": string[],
+  "relatedArtists": string[],
+  "moods": string[],
+  "avoidTerms": string[],
+  "notes": string[],
+  "discoveryIntent": boolean,
+  "starterIntent": boolean,
+  "broadRequest": boolean
+}
+
+Rules:
+- Prefer representative artists/scenes, not generic literal title matches.
+- If the request mentions countries/regions/languages, reflect that in facets, queries, and artist selection.
+- If the request mentions vocals, include that in facets/notes and pick artists where vocals make sense.
+- Avoid junk terms like focus frequency, brain stimulation, study tones, binaural, 432hz unless explicitly requested.
+- Keep arrays short and useful.
+- Queries should be good Apple Music search queries, including blended region + style queries when relevant.
+- If the request is nuanced, infer adjacent genres that help curation.
+
+Example 1 request: Chinese and Japanese lo-fi electronic music to study, concentrate and code; asian sounds, vocals okay
+Example 1 output: {"inferredGenres":["Japanese Ambient","Chinese Electronic","Downtempo","Lo-Fi Beats"],"facets":["japanese","chinese","east asian","lo-fi electronic","study focus","soft vocals"],"queries":["japanese lo-fi electronic","chinese ambient electronic","east asian downtempo vocals","nujabes style japanese lo-fi","mandarin downtempo electronic"],"seedArtists":["Nujabes","Hiroshi Yoshimura","Susumu Yokota","Howie Lee","33EMYBW"],"relatedArtists":["Ryuichi Sakamoto","Haruomi Hosono","The Shanghai Restoration Project","Cornelius"],"moods":["focused","calm","textured"],"avoidTerms":["brain stimulation","432 hz","binaural"],"notes":["allow subtle vocals"],"discoveryIntent":false,"starterIntent":false,"broadRequest":true}
+
+Example 2 request: ambient electronic from Icelandic and Northern European countries, with vocals
+Example 2 output: {"inferredGenres":["Ambient","Dream Pop","Nordic Electronica"],"facets":["icelandic","nordic","northern european","ambient electronic","vocals"],"queries":["icelandic ambient electronic vocals","nordic dream pop electronic","scandinavian ambient pop","iceland electronic vocal"],"seedArtists":["Björk","múm","GusGus","The Knife","Röyksopp","Susanne Sundfør"],"relatedArtists":["Fever Ray","Efterklang","Karin Park","Ólafur Arnalds"],"moods":["ethereal","cold","immersive"],"avoidTerms":["meditation music","sleep sounds"],"notes":["prefer soft or art-pop vocals"],"discoveryIntent":false,"starterIntent":false,"broadRequest":true}`;
+
+  const userPrompt = JSON.stringify(
+    {
+      request: description,
+      heuristicPlan: {
+        inferredGenres: heuristicPlan.inferredGenres,
+        facets: heuristicPlan.facets,
+        seedArtists: heuristicPlan.seedArtists,
+        relatedArtists: heuristicPlan.relatedArtists,
+        moods: heuristicPlan.moods,
+        queries: heuristicPlan.queries,
+        avoidTerms: heuristicPlan.avoidTerms,
+      },
+    },
+    null,
+    2,
+  );
+
+  const response = await complete(
+    runtime.model,
+    {
+      systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: userPrompt }],
+          timestamp: Date.now(),
+        } satisfies UserMessage,
+      ],
+    },
+    { apiKey: auth.apiKey, headers: auth.headers },
+  );
+
+  if (response.stopReason !== "stop") return undefined;
+  const text = response.content.filter((part): part is { type: "text"; text: string } => part.type === "text").map((part) => part.text).join("\n");
+  const json = extractJsonObject(text);
+  if (!json) return undefined;
+
+  return {
+    inferredGenres: asStringArray(json.inferredGenres, 8),
+    facets: asStringArray(json.facets, 10),
+    queries: asStringArray(json.queries, 10),
+    seedArtists: asStringArray(json.seedArtists, 12),
+    relatedArtists: asStringArray(json.relatedArtists, 12),
+    moods: asStringArray(json.moods, 8),
+    avoidTerms: asStringArray(json.avoidTerms, 10),
+    notes: asStringArray(json.notes, 6),
+    discoveryIntent: typeof json.discoveryIntent === "boolean" ? json.discoveryIntent : undefined,
+    starterIntent: typeof json.starterIntent === "boolean" ? json.starterIntent : undefined,
+    broadRequest: typeof json.broadRequest === "boolean" ? json.broadRequest : undefined,
+  };
+}
+
+function mergePlaylistPlan(basePlan: PlaylistPlan, suggestion?: PlaylistPlannerSuggestion): PlaylistPlan {
+  if (!suggestion) return basePlan;
+
+  return {
+    ...basePlan,
+    inferredGenres: unique([...(suggestion.inferredGenres ?? []), ...basePlan.inferredGenres]).slice(0, 10),
+    facets: unique([...(suggestion.facets ?? []), ...basePlan.facets]).slice(0, 10),
+    queries: unique([...(suggestion.queries ?? []), ...basePlan.queries]).slice(0, 10),
+    seedArtists: unique([...(suggestion.seedArtists ?? []), ...basePlan.seedArtists]).slice(0, 16),
+    relatedArtists: unique([...(suggestion.relatedArtists ?? []), ...basePlan.relatedArtists]).slice(0, 16),
+    moods: unique([...(suggestion.moods ?? []), ...basePlan.moods]).slice(0, 10),
+    avoidTerms: unique([...(suggestion.avoidTerms ?? []), ...basePlan.avoidTerms]).map(normalizeText).filter(Boolean).slice(0, 16),
+    notes: unique([...(suggestion.notes ?? []), ...basePlan.notes, "LLM-assisted plan"]).slice(0, 6),
+    discoveryIntent: suggestion.discoveryIntent ?? basePlan.discoveryIntent,
+    starterIntent: suggestion.starterIntent ?? basePlan.starterIntent,
+    broadRequest: suggestion.broadRequest ?? basePlan.broadRequest,
+  };
+}
+
+async function buildPlaylistPlan(description: string, runtime?: PlannerRuntime): Promise<PlaylistPlan> {
   const normalizedDescription = normalizeText(description);
   const matchedEntries: SeedGenreEntry[] = [];
 
   for (const [genreKey, entry] of Object.entries(GENRE_SEED_MAP)) {
     const phrases = unique([genreKey, entry.canonicalGenre, ...(entry.aliases ?? [])].map(normalizeText));
-    if (phrases.some((phrase) => phrase && normalizedDescription.includes(phrase))) {
+    if (phrases.some((phrase) => containsNormalizedPhrase(normalizedDescription, phrase))) {
       matchedEntries.push(entry);
     }
   }
@@ -350,15 +513,28 @@ function buildPlaylistPlan(description: string): PlaylistPlan {
       "workout mix",
       "meditation music",
       "study beats",
+      "concentration music",
+      "focus music",
+      "brain stimulation",
+      "432 hz",
+      "binaural",
     ].map(normalizeText),
   ).filter(Boolean);
 
   const facets = buildPromptFacets(description, matchedEntries, inferredGenres, moods);
 
+  const regionTerms = ["japanese", "chinese", "asian", "mandarin", "japan", "china"];
+  const regionalFacets = facets.filter((facet) => regionTerms.some((term) => containsNormalizedPhrase(facet, term)));
+  const styleFacets = facets.filter((facet) => !regionTerms.some((term) => containsNormalizedPhrase(facet, term)));
+  const compositeRegionalQueries = regionalFacets.flatMap((regionFacet) =>
+    styleFacets.slice(0, 3).map((styleFacet) => `${regionFacet} ${styleFacet}`),
+  );
+
   const queries = unique(
     [
       normalizedDescription,
-      ...facets,
+      ...compositeRegionalQueries,
+      ...facets.filter((facet) => tokenize(facet).length >= 2),
       ...matchedEntries.flatMap((entry) => entry.aliases.slice(0, 2)),
       ...moods.slice(0, 3).map((mood) => `${mood} ${inferredGenres[0] ?? "music"}`),
     ]
@@ -371,7 +547,7 @@ function buildPlaylistPlan(description: string): PlaylistPlan {
   const broadRequest = inferredGenres.length >= 3 || (inferredGenres.length === 0 && tokenize(description).length >= 5);
   const notes = unique(matchedEntries.map((entry) => entry.notes).filter((note): note is string => Boolean(note))).slice(0, 3);
 
-  return {
+  const heuristicPlan: PlaylistPlan = {
     originalDescription: description,
     normalizedDescription,
     inferredGenres,
@@ -387,6 +563,9 @@ function buildPlaylistPlan(description: string): PlaylistPlan {
     moods,
     notes,
   };
+
+  const llmSuggestion = await getLlmPlaylistPlannerSuggestion(description, heuristicPlan, runtime);
+  return mergePlaylistPlan(heuristicPlan, llmSuggestion);
 }
 
 async function searchCatalog(
@@ -860,8 +1039,12 @@ async function collectPlaylistCandidates(
   }
 }
 
-async function curateSongs(config: Required<AppleMusicConfig>, description: string): Promise<{ plan: PlaylistPlan; candidates: CandidateSong[] }> {
-  const plan = buildPlaylistPlan(description);
+async function curateSongs(
+  config: Required<AppleMusicConfig>,
+  description: string,
+  runtime?: PlannerRuntime,
+): Promise<{ plan: PlaylistPlan; candidates: CandidateSong[] }> {
+  const plan = await buildPlaylistPlan(description, runtime);
   const candidates = new Map<string, CandidateSong>();
 
   await collectDirectSongCandidates(config, plan, candidates);
@@ -1080,8 +1263,9 @@ function buildPreviewCacheKey(params: { description: string; playlistName?: stri
 async function buildCuratedPlaylistPreview(
   config: Required<AppleMusicConfig>,
   params: { description: string; playlistName?: string; trackCount?: number; selectionSeed?: string },
+  runtime?: PlannerRuntime,
 ) {
-  const { plan, candidates } = await curateSongs(config, params.description);
+  const { plan, candidates } = await curateSongs(config, params.description, runtime);
   if (candidates.length === 0) {
     throw new Error(`No Apple Music songs matched: ${params.description}`);
   }
@@ -1112,8 +1296,9 @@ async function buildCuratedPlaylistPreview(
 async function previewCuratedPlaylist(
   config: Required<AppleMusicConfig>,
   params: { description: string; playlistName?: string; trackCount?: number; selectionSeed?: string },
+  runtime?: PlannerRuntime,
 ) {
-  const previewData = await buildCuratedPlaylistPreview(config, params);
+  const previewData = await buildCuratedPlaylistPreview(config, params, runtime);
   PREVIEW_PROPOSAL_CACHE.set(buildPreviewCacheKey(params), previewData);
   const { plan, trackCount, selected, selectedCandidates, playlistName } = previewData;
   const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, trackCount);
@@ -1162,10 +1347,11 @@ async function createCuratedPlaylist(
   pi: ExtensionAPI,
   config: Required<AppleMusicConfig>,
   params: { description: string; playlistName?: string; trackCount?: number; startPlaying?: boolean; selectionSeed?: string },
+  runtime?: PlannerRuntime,
 ) {
   const previewData = params.selectionSeed
-    ? await buildCuratedPlaylistPreview(config, params)
-    : (PREVIEW_PROPOSAL_CACHE.get(buildPreviewCacheKey(params)) ?? (await buildCuratedPlaylistPreview(config, params)));
+    ? await buildCuratedPlaylistPreview(config, params, runtime)
+    : (PREVIEW_PROPOSAL_CACHE.get(buildPreviewCacheKey(params)) ?? (await buildCuratedPlaylistPreview(config, params, runtime)));
   const { plan, selectedCandidates, selected, playlistName, playlistDescription } = previewData;
   const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, previewData.trackCount);
 
@@ -1261,7 +1447,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
-      return previewCuratedPlaylist(config, params);
+      return previewCuratedPlaylist(config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry });
     },
   });
 
@@ -1288,7 +1474,7 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await loadConfig(ctx.cwd);
       ensureApiConfig(config);
-      return createCuratedPlaylist(pi, config, params);
+      return createCuratedPlaylist(pi, config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry });
     },
   });
 

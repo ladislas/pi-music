@@ -653,14 +653,36 @@ export const GENRE_SEED_MAP: Record<string, SeedGenreEntry> = {
   },
   "lo-fi beats": {
     canonicalGenre: "Lo-Fi Beats",
-    aliases: ["lo-fi hip hop", "lofi", "lo fi", "lofi beats", "chillhop", "study beats"],
+    aliases: ["lo-fi hip hop", "lofi", "lo fi", "lofi beats", "chillhop", "study beats", "study music", "focus music", "coding music"],
     seedArtists: ["Nujabes", "J Dilla", "Tomppabeats", "Jinsang", "Idealism", "Quickly, Quickly"],
     relatedArtists: ["Kupla", "Philanthrope", "In Love with a Ghost", "Moow", "Wun Two"],
     starterSongs: ["Aruarian Dance - Nujabes", "So.Far - Tomppabeats", "Donuts (Intro) - J Dilla"],
-    moods: ["chill", "nostalgic", "mellow", "studious"],
+    moods: ["chill", "nostalgic", "mellow", "studious", "focused"],
     eras: ["2010s–present"],
     avoidTerms: ["lo-fi house", "lo-fi rock"],
     notes: "Beat-driven instrumental hip-hop for study and relaxation. Rooted in Nujabes and J Dilla production."
+  },
+  "japanese ambient": {
+    canonicalGenre: "Japanese Ambient",
+    aliases: ["japanese ambient", "japanese electronic", "japanese lo-fi", "japanese downtempo", "japanese study music"],
+    seedArtists: ["Hiroshi Yoshimura", "Susumu Yokota", "Nujabes", "Cornelius", "Yellow Magic Orchestra"],
+    relatedArtists: ["Ryuichi Sakamoto", "Haruomi Hosono", "Aoba Ichiko", "Towa Tei", "BUDDHA BRAND"],
+    starterSongs: ["Aruarian Dance - Nujabes", "Music for Nine Post Cards - Hiroshi Yoshimura", "Tobiume - Susumu Yokota"],
+    moods: ["calm", "focused", "minimal", "airy", "studious"],
+    eras: ["1980s–present"],
+    avoidTerms: ["anime ost", "j-rock"],
+    notes: "Japanese ambient, downtempo, and mellow electronic textures suited to studying and concentration."
+  },
+  "chinese electronic": {
+    canonicalGenre: "Chinese Electronic",
+    aliases: ["chinese electronic", "chinese ambient", "chinese lo-fi", "chinese downtempo", "mandarin electronic", "mandarin lo-fi"],
+    seedArtists: ["Howie Lee", "33EMYBW", "Lim Giong", "Mong Tong", "Gong Gong Gong 工工工"],
+    relatedArtists: ["Swimming Paul", "Sonia Calico", "yeule", "The Shanghai Restoration Project", "Faye Wong"],
+    starterSongs: ["Birdy Island - Howie Lee", "A Pure Person - Lim Giong", "The Shanghai Restoration Project - The Bund"],
+    moods: ["textured", "focused", "hypnotic", "atmospheric"],
+    eras: ["2000s–present"],
+    avoidTerms: ["c-drama ost", "mandopop ballad"],
+    notes: "Chinese and Sinophone electronic textures, from downtempo atmospheres to experimental club-adjacent sounds."
   },
   "piano": {
     canonicalGenre: "Piano",
