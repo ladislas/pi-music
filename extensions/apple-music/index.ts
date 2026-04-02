@@ -523,6 +523,21 @@ function candidatePrimaryGenre(candidate: CandidateSong): string {
   return normalizeText(candidate.song.attributes?.genreNames?.[0] ?? "");
 }
 
+function canonicalizeTrackTitle(title: string): string {
+  return normalizeText(title)
+    .replace(/\((radio edit|extended mix|extended version|club mix|dub mix|mix|remix|edit|version|live|instrumental|acoustic|remaster(?:ed)?[^)]*)\)/g, " ")
+    .replace(/\[(radio edit|extended mix|extended version|club mix|dub mix|mix|remix|edit|version|live|instrumental|acoustic|remaster(?:ed)?[^\]]*)\]/g, " ")
+    .replace(/\b(feat|featuring|ft)\b.*$/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function canonicalTrackSignature(candidate: CandidateSong): string {
+  const title = canonicalizeTrackTitle(candidate.song.attributes?.name ?? "");
+  const artist = normalizeText(candidate.song.attributes?.artistName ?? "");
+  return `${artist}::${title}`;
+}
+
 function canSelectCandidate(
   candidate: CandidateSong,
   selected: CandidateSong[],
@@ -565,31 +580,32 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
   const rng = createSeededRng(hashSeed(seedKey));
   const ranked = shuffleWithinScoreBands(candidates, rng);
   const initialPoolSize = clamp(Math.max(trackCount * 3, 30), trackCount, ranked.length);
-  const selected: CandidateSong[] = [];
+  const targetSelectionCount = clamp(Math.max(trackCount + 15, Math.ceil(trackCount * 1.8)), trackCount, ranked.length);
+  const preliminary: CandidateSong[] = [];
   const artistCounts = new Map<string, number>();
   const albumCounts = new Map<string, number>();
   const available = [...ranked.slice(0, initialPoolSize)];
   const fallback = [...ranked.slice(initialPoolSize)];
 
-  const takeCandidate = (candidate: CandidateSong) => {
-    selected.push(candidate);
+  const takePreliminaryCandidate = (candidate: CandidateSong) => {
+    preliminary.push(candidate);
     const artist = candidate.song.attributes?.artistName ?? "Unknown artist";
     const album = candidate.song.attributes?.albumName ?? "Unknown album";
     artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
     albumCounts.set(album, (albumCounts.get(album) ?? 0) + 1);
   };
 
-  while (selected.length < trackCount && (available.length > 0 || fallback.length > 0)) {
+  while (preliminary.length < targetSelectionCount && (available.length > 0 || fallback.length > 0)) {
     if (available.length === 0 && fallback.length > 0) {
-      available.push(...fallback.splice(0, Math.max(5, trackCount - selected.length)));
+      available.push(...fallback.splice(0, Math.max(5, targetSelectionCount - preliminary.length)));
     }
 
     let eligible = available.filter((candidate) =>
-      canSelectCandidate(candidate, selected, artistCounts, albumCounts, maxPerArtist, maxPerAlbum, true),
+      canSelectCandidate(candidate, preliminary, artistCounts, albumCounts, maxPerArtist, maxPerAlbum, true),
     );
     if (eligible.length === 0) {
       eligible = available.filter((candidate) =>
-        canSelectCandidate(candidate, selected, artistCounts, albumCounts, maxPerArtist, maxPerAlbum, false),
+        canSelectCandidate(candidate, preliminary, artistCounts, albumCounts, maxPerArtist, maxPerAlbum, false),
       );
     }
     if (eligible.length === 0) {
@@ -606,10 +622,22 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
     const picked = eligible[weightedPickIndex(eligible, rng)];
     const pickedIndex = available.findIndex((candidate) => candidate.song.id === picked.song.id);
     if (pickedIndex >= 0) available.splice(pickedIndex, 1);
-    takeCandidate(picked);
+    takePreliminaryCandidate(picked);
   }
 
-  return selected;
+  const finalized: CandidateSong[] = [];
+  const seenSignatures = new Set<string>();
+  const finalizeFrom = [...preliminary, ...ranked.filter((candidate) => !preliminary.some((picked) => picked.song.id === candidate.song.id))];
+
+  for (const candidate of finalizeFrom) {
+    const signature = canonicalTrackSignature(candidate);
+    if (seenSignatures.has(signature)) continue;
+    finalized.push(candidate);
+    seenSignatures.add(signature);
+    if (finalized.length >= trackCount) break;
+  }
+
+  return finalized;
 }
 
 async function collectDirectSongCandidates(
