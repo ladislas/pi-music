@@ -1899,12 +1899,17 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
-      ctx.ui.notify("Working on playlist preview...", "info");
-      const config = await loadConfig(ctx.cwd);
-      ensureApiConfig(config);
-      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
-      const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
-      await appendAssistantTextMessage(ctx, text);
+      try {
+        ctx.ui.notify("Working on playlist preview...", "info");
+        const config = await loadConfig(ctx.cwd);
+        ensureApiConfig(config);
+        const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
+        await appendAssistantTextMessage(ctx, text);
+        ctx.ui.notify("Playlist preview ready.", "success");
+      } catch (error) {
+        ctx.ui.notify(`Playlist preview failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+      }
     },
   });
 
@@ -1921,12 +1926,17 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
-      ctx.ui.notify("Working on playlist preview...", "info");
-      const config = await loadConfig(ctx.cwd);
-      ensureApiConfig(config);
-      const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
-      const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
-      await appendAssistantTextMessage(ctx, text);
+      try {
+        ctx.ui.notify("Working on playlist preview...", "info");
+        const config = await loadConfig(ctx.cwd);
+        ensureApiConfig(config);
+        const result = await previewCuratedPlaylist(config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
+        await appendAssistantTextMessage(ctx, text);
+        ctx.ui.notify("Playlist preview ready.", "success");
+      } catch (error) {
+        ctx.ui.notify(`Playlist preview failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+      }
     },
   });
 
@@ -1943,12 +1953,17 @@ export default function appleMusicExtension(pi: ExtensionAPI) {
         return;
       }
 
-      ctx.ui.notify("Working on playlist creation...", "info");
-      const config = await loadConfig(ctx.cwd);
-      ensureApiConfig(config);
-      const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
-      const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
-      await appendAssistantTextMessage(ctx, text);
+      try {
+        ctx.ui.notify("Working on playlist creation...", "info");
+        const config = await loadConfig(ctx.cwd);
+        ensureApiConfig(config);
+        const result = await createCuratedPlaylist(pi, config, { description, trackCount: 25 }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel });
+        const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
+        await appendAssistantTextMessage(ctx, text);
+        ctx.ui.notify("Playlist created.", "success");
+      } catch (error) {
+        ctx.ui.notify(`Playlist creation failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+      }
     },
   });
 }
