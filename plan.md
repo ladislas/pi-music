@@ -230,7 +230,7 @@ Expected outcome:
 - [x] Parse prompt into facets more explicitly
 - [x] Score candidates per facet
 - [x] Add slot allocation across facets
-- [ ] Ensure final playlist covers all major requested facets
+- [x] Ensure final playlist covers all major requested facets
 
 ### History
 - [ ] Define in-memory recent history structure

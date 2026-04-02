@@ -605,12 +605,21 @@ function weightedPickIndex(candidates: CandidateSong[], rng: () => number): numb
   return candidates.length - 1;
 }
 
+function buildMajorFacets(plan: PlaylistPlan, trackCount: number): string[] {
+  return plan.facets.filter((facet) => facet.length >= 3).slice(0, Math.min(4, trackCount));
+}
+
 function buildFacetTargets(plan: PlaylistPlan, trackCount: number): Map<string, number> {
-  const meaningfulFacets = plan.facets.filter((facet) => facet.length >= 3).slice(0, Math.min(4, trackCount));
+  const meaningfulFacets = buildMajorFacets(plan, trackCount);
   if (meaningfulFacets.length <= 1) return new Map();
 
   const baseTarget = Math.max(1, Math.floor(trackCount / meaningfulFacets.length));
   return new Map(meaningfulFacets.map((facet) => [facet, baseTarget]));
+}
+
+function findUncoveredMajorFacets(plan: PlaylistPlan, selected: CandidateSong[], trackCount: number): string[] {
+  const covered = new Set(selected.flatMap((candidate) => [...candidate.facetMatches]));
+  return buildMajorFacets(plan, trackCount).filter((facet) => !covered.has(facet));
 }
 
 function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, seedKey: string, plan: PlaylistPlan): CandidateSong[] {
@@ -686,6 +695,7 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
   const finalized: CandidateSong[] = [];
   const seenSignatures = new Set<string>();
   const finalizedFacetCounts = new Map<string, number>();
+  const majorFacets = buildMajorFacets(plan, trackCount);
   const preliminaryIds = new Set(preliminary.map((candidate) => candidate.song.id));
   const finalizeFrom = [...preliminary, ...ranked.filter((candidate) => !preliminaryIds.has(candidate.song.id))];
 
@@ -701,6 +711,13 @@ function selectPlaylistSongs(candidates: CandidateSong[], trackCount: number, se
     }
     return true;
   };
+
+  for (const facet of majorFacets) {
+    if (finalized.length >= trackCount) break;
+    if ((finalizedFacetCounts.get(facet) ?? 0) > 0) continue;
+    const representative = finalizeFrom.find((candidate) => !seenSignatures.has(canonicalTrackSignature(candidate)) && candidate.facetMatches.has(facet));
+    if (representative) tryAddFinalCandidate(representative);
+  }
 
   for (const facet of [...facetTargets.keys()]) {
     const target = facetTargets.get(facet) ?? 0;
@@ -1074,6 +1091,7 @@ async function previewCuratedPlaylist(
   const previewData = await buildCuratedPlaylistPreview(config, params);
   PREVIEW_PROPOSAL_CACHE.set(buildPreviewCacheKey(params), previewData);
   const { plan, trackCount, selected, selectedCandidates, playlistName } = previewData;
+  const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, trackCount);
   const preview = selected.map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
   const planSummary = [
     `Proposed playlist: \"${playlistName}\"`,
@@ -1100,6 +1118,7 @@ async function previewCuratedPlaylist(
       trackCount,
       plan,
       selectionSeed: previewData.selectionSeed,
+      uncoveredMajorFacets,
       songs: selectedCandidates.map((candidate) => ({
         id: candidate.song.id,
         name: candidate.song.attributes?.name,
@@ -1123,6 +1142,7 @@ async function createCuratedPlaylist(
     ? await buildCuratedPlaylistPreview(config, params)
     : (PREVIEW_PROPOSAL_CACHE.get(buildPreviewCacheKey(params)) ?? (await buildCuratedPlaylistPreview(config, params)));
   const { plan, selectedCandidates, selected, playlistName, playlistDescription } = previewData;
+  const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, previewData.trackCount);
 
   if (isMacOS()) {
     await ensurePlaylistFolder(pi);
@@ -1160,6 +1180,7 @@ async function createCuratedPlaylist(
           `\nPlaylist id: ${created.id}` +
           `\nFolder: ${APPLE_MUSIC_FOLDER_NAME}${movedToFolder ? "" : " (pending sync to Music.app)"}` +
           `${planSummary ? `\n${planSummary}` : ""}` +
+          `${uncoveredMajorFacets.length > 0 ? `\nUncovered facets: ${uncoveredMajorFacets.join(", ")}` : ""}` +
           `\n\nTop picks:\n${preview}${remainder}${playbackMessage}`,
       },
     ],
@@ -1171,6 +1192,7 @@ async function createCuratedPlaylist(
       movedToFolder,
       plan,
       selectionSeed: previewData.selectionSeed,
+      uncoveredMajorFacets,
       songs: selectedCandidates.map((candidate) => ({
         id: candidate.song.id,
         name: candidate.song.attributes?.name,
