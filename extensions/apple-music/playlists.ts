@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-import { ensureApiConfig, loadConfig, loadProposal, summarizeSkippedTracks } from "./config.js";
+import { loadProposal, summarizeSkippedTracks } from "./config.js";
+import { runDescribedCommand, withPlaylistConfig } from "./command-helpers.js";
 import { createCuratedPlaylist, previewCuratedPlaylist } from "./playlist-service.js";
 import { appendAssistantTextMessage } from "./utils.js";
 
@@ -23,8 +24,7 @@ export function registerAppleMusicPlaylists(pi: ExtensionAPI) {
       selectionSeed: Type.Optional(Type.String({ description: "Optional seed to reproduce a prior preview exactly." })),
     }),
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
-      const config = await loadConfig(ctx.cwd);
-      ensureApiConfig(config);
+      const config = await withPlaylistConfig(ctx);
       return previewCuratedPlaylist(config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
     },
   });
@@ -50,93 +50,66 @@ export function registerAppleMusicPlaylists(pi: ExtensionAPI) {
       selectionSeed: Type.Optional(Type.String({ description: "Optional seed from a reviewed preview to recreate the exact same tracklist." })),
     }),
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
-      const config = await loadConfig(ctx.cwd);
-      ensureApiConfig(config);
+      const config = await withPlaylistConfig(ctx);
       return createCuratedPlaylist(pi, config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
     },
   });
 
-  pi.registerCommand("apple-music-playlist", {
-    description: "Start collaborative Apple Music playlist planning from a text description",
-    handler: async (args: any, ctx: any) => {
-      const description = args.trim();
-      if (!description) {
-        ctx.ui.notify("Usage: /apple-music-playlist <description>", "warning");
-        return;
-      }
-      if (!ctx.isIdle()) {
-        ctx.ui.notify("Agent is busy. Try again when the current turn finishes.", "warning");
-        return;
-      }
-
-      try {
-        ctx.ui.notify("Working on playlist preview...", "info");
-        const config = await loadConfig(ctx.cwd);
-        ensureApiConfig(config);
-        const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
-        const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
-        appendAssistantTextMessage(pi, ctx, text);
-        ctx.ui.notify(text, "info");
-        ctx.ui.notify("Playlist preview ready.", "success");
-      } catch (error) {
-        ctx.ui.notify(`Playlist preview failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-      }
+  const registerDescribedPlaylistCommand = (
+    name: string,
+    description: string,
+    options: {
+      usage: string;
+      progressMessage: string;
+      successMessage: string;
+      failurePrefix: string;
+      fallbackText: (description: string) => string;
+      run: (description: string, ctx: any) => Promise<{ content?: Array<{ type?: string; text?: string }> }>;
     },
+  ) => {
+    pi.registerCommand(name, {
+      description,
+      handler: async (args: any, ctx: any) => {
+        await runDescribedCommand(pi, ctx, {
+          args,
+          ...options,
+        });
+      },
+    });
+  };
+
+  const runPreview = async (description: string, ctx: any) => {
+    const config = await withPlaylistConfig(ctx);
+    return previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
+  };
+
+  registerDescribedPlaylistCommand("apple-music-playlist", "Start collaborative Apple Music playlist planning from a text description", {
+    usage: "/apple-music-playlist <description>",
+    progressMessage: "Working on playlist preview...",
+    successMessage: "Playlist preview ready.",
+    failurePrefix: "Playlist preview failed",
+    fallbackText: (description) => `Previewed playlist for ${description}.`,
+    run: runPreview,
   });
 
-  pi.registerCommand("apple-music-preview", {
-    description: "Preview an Apple Music playlist from a text description",
-    handler: async (args: any, ctx: any) => {
-      const description = args.trim();
-      if (!description) {
-        ctx.ui.notify("Usage: /apple-music-preview <description>", "warning");
-        return;
-      }
-      if (!ctx.isIdle()) {
-        ctx.ui.notify("Agent is busy. Try again when the current turn finishes.", "warning");
-        return;
-      }
-
-      try {
-        ctx.ui.notify("Working on playlist preview...", "info");
-        const config = await loadConfig(ctx.cwd);
-        ensureApiConfig(config);
-        const result = await previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
-        const text = result.content.find((item) => item.type === "text")?.text ?? `Previewed playlist for ${description}.`;
-        appendAssistantTextMessage(pi, ctx, text);
-        ctx.ui.notify(text, "info");
-        ctx.ui.notify("Playlist preview ready.", "success");
-      } catch (error) {
-        ctx.ui.notify(`Playlist preview failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-      }
-    },
+  registerDescribedPlaylistCommand("apple-music-preview", "Preview an Apple Music playlist from a text description", {
+    usage: "/apple-music-preview <description>",
+    progressMessage: "Working on playlist preview...",
+    successMessage: "Playlist preview ready.",
+    failurePrefix: "Playlist preview failed",
+    fallbackText: (description) => `Previewed playlist for ${description}.`,
+    run: runPreview,
   });
 
-  pi.registerCommand("apple-music-make", {
-    description: "Create an Apple Music playlist from a text description",
-    handler: async (args: any, ctx: any) => {
-      const description = args.trim();
-      if (!description) {
-        ctx.ui.notify("Usage: /apple-music-make <description>", "warning");
-        return;
-      }
-      if (!ctx.isIdle()) {
-        ctx.ui.notify("Agent is busy. Try again when the current turn finishes.", "warning");
-        return;
-      }
-
-      try {
-        ctx.ui.notify("Working on playlist creation...", "info");
-        const config = await loadConfig(ctx.cwd);
-        ensureApiConfig(config);
-        const result = await createCuratedPlaylist(pi, config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
-        const text = result.content.find((item) => item.type === "text")?.text ?? `Created playlist for ${description}.`;
-        appendAssistantTextMessage(pi, ctx, text);
-        ctx.ui.notify(text, "info");
-        ctx.ui.notify("Playlist created.", "success");
-      } catch (error) {
-        ctx.ui.notify(`Playlist creation failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-      }
+  registerDescribedPlaylistCommand("apple-music-make", "Create an Apple Music playlist from a text description", {
+    usage: "/apple-music-make <description>",
+    progressMessage: "Working on playlist creation...",
+    successMessage: "Playlist created.",
+    failurePrefix: "Playlist creation failed",
+    fallbackText: (description) => `Created playlist for ${description}.`,
+    run: async (description, ctx) => {
+      const config = await withPlaylistConfig(ctx);
+      return createCuratedPlaylist(pi, config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
     },
   });
 

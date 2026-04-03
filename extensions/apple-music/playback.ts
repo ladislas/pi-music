@@ -36,14 +36,17 @@ export function registerAppleMusicPlayback(pi: ExtensionAPI) {
   const registerTransportCommand = (
     name: string,
     description: string,
-    action: (typeof TRANSPORT_ACTIONS)[number],
-    parse?: (args: string) => { playlistName?: string; volume?: number },
+    action: (typeof TRANSPORT_ACTIONS)[number] | ((args: string, ctx: any) => (typeof TRANSPORT_ACTIONS)[number] | undefined),
+    parse?: (args: string, ctx: any) => { playlistName?: string; volume?: number } | undefined,
   ) => {
     pi.registerCommand(name, {
       description,
       handler: async (args: any, ctx: any) => {
-        const extra = parse?.(args) ?? {};
-        const result = await transport(pi, APPLE_MUSIC_FOLDER_NAME, action, extra);
+        const resolvedAction = typeof action === "function" ? action(args, ctx) : action;
+        if (!resolvedAction) return;
+        const extra = parse?.(args, ctx);
+        if (extra === undefined) return;
+        const result = await transport(pi, APPLE_MUSIC_FOLDER_NAME, resolvedAction, extra ?? {});
         ctx.ui.notify(result, "info");
       },
     });
@@ -55,30 +58,35 @@ export function registerAppleMusicPlayback(pi: ExtensionAPI) {
   registerTransportCommand("apple-music-next", "Skip to the next track", "next");
   registerTransportCommand("apple-music-prev", "Go to the previous track", "previous");
 
-  pi.registerCommand("apple-music-shuffle", {
-    description: "Set Apple Music shuffle on or off: /apple-music-shuffle on|off",
-    handler: async (args: any, ctx: any) => {
-      const mode = args.trim().toLowerCase();
-      if (mode !== "on" && mode !== "off") {
-        ctx.ui.notify("Usage: /apple-music-shuffle on|off", "warning");
-        return;
-      }
-      const result = await transport(pi, APPLE_MUSIC_FOLDER_NAME, mode === "on" ? "shuffle_on" : "shuffle_off");
-      ctx.ui.notify(result, "info");
-    },
-  });
+  const parseMode = <T extends string>(
+    value: string,
+    allowed: readonly T[],
+    usage: string,
+    ctx: any,
+  ): T | undefined => {
+    const normalized = value.trim().toLowerCase() as T;
+    if (!allowed.includes(normalized)) {
+      ctx.ui.notify(`Usage: ${usage}`, "warning");
+      return undefined;
+    }
+    return normalized;
+  };
 
-  pi.registerCommand("apple-music-repeat", {
-    description: "Set Apple Music repeat mode: /apple-music-repeat off|one|all",
-    handler: async (args: any, ctx: any) => {
-      const mode = args.trim().toLowerCase();
-      if (mode !== "off" && mode !== "one" && mode !== "all") {
-        ctx.ui.notify("Usage: /apple-music-repeat off|one|all", "warning");
-        return;
-      }
-      const action = mode === "off" ? "repeat_off" : mode === "one" ? "repeat_one" : "repeat_all";
-      const result = await transport(pi, APPLE_MUSIC_FOLDER_NAME, action);
-      ctx.ui.notify(result, "info");
+  registerTransportCommand(
+    "apple-music-shuffle",
+    "Set Apple Music shuffle on or off: /apple-music-shuffle on|off",
+    (args, ctx) => {
+      const mode = parseMode(args, ["on", "off"] as const, "/apple-music-shuffle on|off", ctx);
+      return mode ? (mode === "on" ? "shuffle_on" : "shuffle_off") : undefined;
     },
-  });
+  );
+
+  registerTransportCommand(
+    "apple-music-repeat",
+    "Set Apple Music repeat mode: /apple-music-repeat off|one|all",
+    (args, ctx) => {
+      const mode = parseMode(args, ["off", "one", "all"] as const, "/apple-music-repeat off|one|all", ctx);
+      return mode ? (mode === "off" ? "repeat_off" : mode === "one" ? "repeat_one" : "repeat_all") : undefined;
+    },
+  );
 }
