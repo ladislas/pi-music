@@ -4,6 +4,7 @@ Pi extension that:
 
 - previews and creates Apple Music playlists from natural-language descriptions
 - supports collaborative playlist planning with follow-up refinement directions
+- stores proposal files under `.pi/apple-music-proposals/` so previews can be inspected, reused, and refined later
 - places generated playlists inside the `piMusic` playlist folder in Apple Music
 - stores prompt/refinement metadata in playlist descriptions for later evolution
 - controls the local Music app on macOS (`play`, `pause`, `next`, `previous`, shuffle/random, repeat, volume, playlist playback)
@@ -58,6 +59,11 @@ You can configure credentials in either:
 - `~/.pi/agent/apple-music.json`
 
 Environment variables override file values.
+
+Optional config:
+
+- `plannerModel`: override the model used for LLM-assisted playlist interpretation
+- `APPLE_MUSIC_PLANNER_MODEL`: environment-variable override for `plannerModel`
 
 ### 3) Easiest flow
 
@@ -177,7 +183,8 @@ cat > .pi/apple-music.json <<'EOF'
 {
   "developerToken": "PASTE_DEVELOPER_TOKEN_HERE",
   "musicUserToken": "PASTE_MUSIC_USER_TOKEN_HERE",
-  "storefront": "us"
+  "storefront": "us",
+  "plannerModel": "anthropic/claude-haiku-4-5-20251001"
 }
 EOF
 ```
@@ -197,6 +204,8 @@ Once configured, try one of these:
 - `/apple-music-playlist tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-preview tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-make tropical house, deep house, jazzy soulful tunes`
+- `/apple-music-proposal last`
+- `/apple-music-skipped last`
 - `/apple-music-status`
 
 ## Install in pi
@@ -240,11 +249,15 @@ Slash commands:
 - `/apple-music-pause`
 - `/apple-music-next`
 - `/apple-music-prev`
-- `/apple-music-shuffle on`
+- `/apple-music-shuffle on|off`
 - `/apple-music-repeat off|one|all`
 - `/apple-music-playlist <description>`
 - `/apple-music-preview <description>`
 - `/apple-music-make <description>`
+- `/apple-music-proposal [last|proposal-id]`
+- `/apple-music-skipped [last|proposal-id]`
+
+Proposal files are written to `.pi/apple-music-proposals/`. They capture the generated tracklist, candidate ranking, skipped tracks, playlist plan metadata, and selection seed so you can inspect or reproduce a preview later.
 
 ## Notes
 
@@ -252,6 +265,8 @@ Slash commands:
 - Local transport controls currently target **macOS Music.app**.
 - Generated playlists are placed in the `piMusic` folder, preferably via the Apple Music API `parent` relationship, with AppleScript fallback on macOS.
 - Playlist descriptions store compact provenance data: prompt, refinements, and selection seed.
-- The planner now combines heuristic Apple Music curation logic with an LLM-assisted interpretation layer for more nuanced prompts.
+- Preview and creation runs can persist proposal JSON files under `.pi/apple-music-proposals/` for later review.
+- The planner combines heuristic Apple Music curation logic with an LLM-assisted interpretation layer for more nuanced prompts.
+- You can optionally override the planner model with `APPLE_MUSIC_PLANNER_MODEL` or `plannerModel` in config.
 - "random" is implemented via shuffle.
 - A local helper page is available at `helper/music-user-token.html`, served by `npm run token-helper`.
