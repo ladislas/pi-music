@@ -1,4 +1,6 @@
-function normalizeText(value) {
+import type { CandidateSong, PlaylistPlan } from "./types.js";
+
+function normalizeText(value: string): string {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9\s,/'&+-]+/g, " ")
@@ -6,12 +8,18 @@ function normalizeText(value) {
     .trim();
 }
 
-export function detectDiscographyIntent(description) {
+export function detectDiscographyIntent(description: string): {
+  discographyIntent: boolean;
+  strictArtistOnly: boolean;
+  targetArtist?: string;
+} {
   const normalized = normalizeText(description);
   const discographyIntent = /(all (the )?(songs|tracks|albums)|every song|complete playlist|complete discography|discography|all available tracks|all albums|all eps|all singles)/i.test(
     description,
   );
-  const strictArtistOnly = /(only songs by|only recordings by|do not include other artists|only the artist|all the .* songs|only\s+[\w .&'+-]+\s+songs)/i.test(description);
+  const strictArtistOnly = /(only songs by|only recordings by|do not include other artists|only the artist|all the .* songs|only\s+[\w .&'+-]+\s+songs)/i.test(
+    description,
+  );
 
   const artistPatterns = [
     /all songs by\s+([^,.;]+)/i,
@@ -23,7 +31,7 @@ export function detectDiscographyIntent(description) {
     /all the\s+([^,.;]+?)\s+songs/i,
   ];
 
-  let targetArtist;
+  let targetArtist: string | undefined;
   for (const pattern of artistPatterns) {
     const match = description.match(pattern);
     if (match?.[1]) {
@@ -47,26 +55,26 @@ export function detectDiscographyIntent(description) {
   };
 }
 
-export function classifyReleaseType(releaseName) {
+export function classifyReleaseType(releaseName: string): "album" | "ep" | "single" | "other" {
   const normalized = normalizeText(releaseName);
   if (/\bep\b/.test(normalized)) return "ep";
   if (/\bsingle\b/.test(normalized)) return "single";
   return normalized ? "album" : "other";
 }
 
-export function hasVersionMarker(title) {
+export function hasVersionMarker(title: string): boolean {
   return /(live|acoustic|alternate|alt\b|remix|version|session|demo|instrumental|piano solo|duet|edit)/i.test(title);
 }
 
-export function shouldIncludeAllSingles(plan) {
+export function shouldIncludeAllSingles(plan: PlaylistPlan): boolean {
   return /all singles|include singles|keep singles/.test(plan.normalizedDescription);
 }
 
-export function shouldIncludeAlternateVersions(plan) {
+export function shouldIncludeAlternateVersions(plan: PlaylistPlan): boolean {
   return /live|acoustic|alternate|remix|version|session|demo|instrumental|duet/.test(plan.normalizedDescription);
 }
 
-export function songArtistIncludesTarget(songArtistName, targetArtistName) {
+export function songArtistIncludesTarget(songArtistName: string, targetArtistName: string): boolean {
   const normalizedSongArtist = normalizeText(songArtistName);
   const normalizedTargetArtist = normalizeText(targetArtistName);
   if (!normalizedSongArtist || !normalizedTargetArtist) return false;
@@ -79,21 +87,29 @@ export function songArtistIncludesTarget(songArtistName, targetArtistName) {
   return artistParts.includes(normalizedTargetArtist);
 }
 
-export function buildDiscographySelection(candidates, plan, canonicalTrackSignature) {
+export function buildDiscographySelection(
+  candidates: CandidateSong[],
+  plan: PlaylistPlan,
+  canonicalTrackSignature: (candidate: CandidateSong) => string,
+): {
+  selectedCandidates: CandidateSong[];
+  skippedCandidates: Array<CandidateSong & { skipReason: string }>;
+} {
   const includeAllSingles = shouldIncludeAllSingles(plan);
   const includeAlternateVersions = shouldIncludeAlternateVersions(plan);
-  const selected = [];
-  const skipped = [];
-  const selectedIds = new Set();
-  const coreSignatures = new Set();
+  const selected: CandidateSong[] = [];
+  const skipped: Array<CandidateSong & { skipReason: string }> = [];
+  const selectedIds = new Set<string>();
+  const coreSignatures = new Set<string>();
 
-  const pushSelected = (candidate) => {
+  const pushSelected = (candidate: CandidateSong) => {
     if (selectedIds.has(candidate.song.id)) return;
     selected.push(candidate);
     selectedIds.add(candidate.song.id);
   };
 
-  const byReleaseType = (releaseType) => candidates.filter((candidate) => (candidate.sourceReleaseType ?? "other") === releaseType);
+  const byReleaseType = (releaseType: "album" | "ep" | "single" | "other") =>
+    candidates.filter((candidate) => (candidate.sourceReleaseType ?? "other") === releaseType);
 
   for (const candidate of [...byReleaseType("album"), ...byReleaseType("ep")]) {
     pushSelected(candidate);

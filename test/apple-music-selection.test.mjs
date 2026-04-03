@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildDiscographySelection, songArtistIncludesTarget } from "../extensions/apple-music/discography-logic.js";
+import { buildDiscographySelection, songArtistIncludesTarget } from "../extensions/apple-music/discography-logic.ts";
 
 function candidate(id, name, artistName, releaseName, releaseType) {
   return {
