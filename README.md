@@ -9,6 +9,13 @@ Pi extension that:
 - stores prompt/refinement metadata in playlist descriptions for later evolution
 - controls the local Music app on macOS (`play`, `pause`, `next`, `previous`, shuffle/random, repeat, volume, playlist playback)
 
+Internally, the extension is split into two capability areas:
+
+- **Playback**: local Music.app transport control
+- **Playlists**: prompt interpretation, curation, preview, and creation
+
+`extensions/apple-music/index.ts` now acts as a thin composition layer that registers both sides.
+
 ## What it can do
 
 Examples:
@@ -258,6 +265,17 @@ Slash commands:
 - `/apple-music-skipped [last|proposal-id]`
 
 Proposal files are written to `.pi/apple-music-proposals/`. They capture the generated tracklist, candidate ranking, skipped tracks, playlist plan metadata, and selection seed so you can inspect or reproduce a preview later.
+
+## Architecture
+
+Key files:
+
+- `extensions/apple-music/playback.ts`: playback tool + slash commands
+- `extensions/apple-music/playlists.ts`: playlist preview/create tools + slash commands
+- `extensions/apple-music/transport.ts`: low-level AppleScript transport helpers
+- `extensions/apple-music/index.ts`: extension composition and shared status/help wiring
+
+This keeps direct player control separate from recommendation and playlist-building logic, while still allowing orchestration flows like create-and-play.
 
 ## Notes
 
