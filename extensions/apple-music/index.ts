@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import { loadConfig } from "./config.js";
-import { registerAppleMusicPlayback } from "./playback.js";
-import { registerAppleMusicPlaylists } from "./playlists.js";
+import { registerAppleMusicPlayback } from "./playback-registration.js";
+import { registerAppleMusicPlaylists } from "./playlist-registration.js";
 import { isMacOS } from "./utils.js";
 
 export default function appleMusicExtension(pi: ExtensionAPI) {

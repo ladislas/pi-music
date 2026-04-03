@@ -270,8 +270,8 @@ Proposal files are written to `.pi/apple-music-proposals/`. They capture the gen
 
 Key files:
 
-- `extensions/apple-music/playback.ts`: playback tool + slash commands
-- `extensions/apple-music/playlists.ts`: playlist tool/command registration only
+- `extensions/apple-music/playback-registration.ts`: playback tool + slash commands
+- `extensions/apple-music/playlist-registration.ts`: playlist tool/command registration only
 - `extensions/apple-music/playlist-service.ts`: playlist curation, preview, and creation domain logic
 - `extensions/apple-music/transport.ts`: low-level AppleScript transport helpers
 - `extensions/apple-music/index.ts`: extension composition and shared status/help wiring
