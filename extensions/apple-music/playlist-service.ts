@@ -40,7 +40,7 @@ import {
 import { ensurePlaylistFolder, movePlaylistToFolder, transport } from "./transport.js";
 import { derivePlaylistName, formatBulletList, isMacOS, normalizeText, songLabel, unique } from "./utils.js";
 
-const PREVIEW_PROPOSAL_CACHE = new Map<string, Awaited<ReturnType<typeof buildCuratedPlaylistPreview>>>();
+const PLAYLIST_PROPOSAL_CACHE = new Map<string, Awaited<ReturnType<typeof buildPlaylistProposal>>>();
 
 async function collectDirectSongCandidates(
   config: Required<AppleMusicConfig>,
@@ -215,11 +215,11 @@ async function curateSongs(
   return { plan, candidates: ranked };
 }
 
-function buildPreviewCacheKey(params: { description: string; playlistName?: string; trackCount?: number }): string {
+function buildProposalCacheKey(params: { description: string; playlistName?: string; trackCount?: number }): string {
   return `${normalizeText(params.description)}::${normalizeText(params.playlistName ?? "")}::${Math.round(params.trackCount ?? 25)}`;
 }
 
-async function buildCuratedPlaylistPreview(
+async function buildPlaylistProposal(
   config: Required<AppleMusicConfig>,
   params: { description: string; playlistName?: string; trackCount?: number; selectionSeed?: string },
   runtime?: PlannerRuntime,
@@ -286,26 +286,26 @@ async function buildCuratedPlaylistPreview(
   };
 }
 
-export async function previewCuratedPlaylist(
+export async function proposeCuratedPlaylist(
   config: Required<AppleMusicConfig>,
   params: { description: string; playlistName?: string; trackCount?: number; selectionSeed?: string },
   runtime?: PlannerRuntime,
 ) {
-  const previewData = await buildCuratedPlaylistPreview(config, params, runtime);
-  PREVIEW_PROPOSAL_CACHE.set(buildPreviewCacheKey(params), previewData);
-  const { plan, trackCount, selected, selectedCandidates, playlistName } = previewData;
+  const proposalData = await buildPlaylistProposal(config, params, runtime);
+  PLAYLIST_PROPOSAL_CACHE.set(buildProposalCacheKey(params), proposalData);
+  const { plan, trackCount, selected, selectedCandidates, playlistName } = proposalData;
   const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, trackCount);
-  const previewDisplayCount = Math.min(25, selected.length);
-  const preview = selected.slice(0, previewDisplayCount).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
-  const highConfidencePreview = selected.slice(0, 10).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
+  const proposalDisplayCount = Math.min(25, selected.length);
+  const proposalTracklist = selected.slice(0, proposalDisplayCount).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
+  const highConfidenceProposal = selected.slice(0, 10).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
   const collaborationCount = plan.targetArtist
     ? selectedCandidates.filter((candidate) => normalizeText(candidate.song.attributes?.artistName ?? "") !== normalizeText(plan.targetArtist ?? "")).length
     : 0;
   const planSummary = [
     `Proposed playlist: \"${playlistName}\"`,
     plan.discographyIntent ? `Selected tracks: ${selectedCandidates.length}` : `Tracks: ${trackCount}`,
-    plan.discographyIntent && previewData.skippedCandidates.length > 0 ? `Skipped tracks: ${previewData.skippedCandidates.length} (saved in proposal JSON)` : "",
-    plan.discographyIntent && selected.length > previewDisplayCount ? `Showing first ${previewDisplayCount} of ${selected.length} tracks below` : "",
+    plan.discographyIntent && proposalData.skippedCandidates.length > 0 ? `Skipped tracks: ${proposalData.skippedCandidates.length} (saved in proposal JSON)` : "",
+    plan.discographyIntent && selected.length > proposalDisplayCount ? `Showing first ${proposalDisplayCount} of ${selected.length} tracks below` : "",
     plan.inferredGenres.length > 0 ? `Genres: ${plan.inferredGenres.join(", ")}` : "",
     plan.facets.length > 1 ? `Facets: ${plan.facets.slice(0, 5).join(", ")}` : "",
     plan.seedArtists.length > 0 ? `Seed artists: ${plan.seedArtists.slice(0, 6).join(", ")}` : "",
@@ -339,21 +339,21 @@ export async function previewCuratedPlaylist(
         type: "text",
         text:
           `${planSummary}` +
-          `\n\nHigh-confidence picks:\n${highConfidencePreview}` +
-          `\n\n${plan.discographyIntent ? `Tracklist sample (first ${previewDisplayCount}):` : "Full tracklist:"}\n${preview}` +
+          `\n\nHigh-confidence picks:\n${highConfidenceProposal}` +
+          `\n\n${plan.discographyIntent ? `Tracklist sample (first ${proposalDisplayCount}):` : "Full tracklist:"}\n${proposalTracklist}` +
           `${collaborativeSections ? `\n\n${collaborativeSections}` : ""}` +
           `\n\nIf this looks good, reply create to make it in Apple Music. Otherwise reply refine <what to change> to adjust it.`,
       },
     ],
     details: {
       playlistName,
-      playlistDescription: previewData.playlistDescription,
+      playlistDescription: proposalData.playlistDescription,
       playlistFolder: APPLE_MUSIC_FOLDER_NAME,
       trackCount,
       plan,
-      selectionSeed: previewData.selectionSeed,
-      proposalId: previewData.proposalId,
-      proposalPath: previewData.proposalPath,
+      selectionSeed: proposalData.selectionSeed,
+      proposalId: proposalData.proposalId,
+      proposalPath: proposalData.proposalPath,
       uncoveredMajorFacets,
       songs: selectedCandidates.map((candidate) => ({
         id: candidate.song.id,
@@ -375,11 +375,11 @@ export async function createCuratedPlaylist(
   params: { description: string; playlistName?: string; trackCount?: number; startPlaying?: boolean; selectionSeed?: string },
   runtime?: PlannerRuntime,
 ) {
-  const previewData = params.selectionSeed
-    ? await buildCuratedPlaylistPreview(config, params, runtime)
-    : (PREVIEW_PROPOSAL_CACHE.get(buildPreviewCacheKey(params)) ?? (await buildCuratedPlaylistPreview(config, params, runtime)));
-  const { plan, selectedCandidates, selected, playlistName, playlistDescription } = previewData;
-  const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, previewData.trackCount);
+  const proposalData = params.selectionSeed
+    ? await buildPlaylistProposal(config, params, runtime)
+    : (PLAYLIST_PROPOSAL_CACHE.get(buildProposalCacheKey(params)) ?? (await buildPlaylistProposal(config, params, runtime)));
+  const { plan, selectedCandidates, selected, playlistName, playlistDescription } = proposalData;
+  const uncoveredMajorFacets = findUncoveredMajorFacets(plan, selectedCandidates, proposalData.trackCount);
 
   const parentFolderId = await findOrCreateLibraryPlaylistFolderId(config, APPLE_MUSIC_FOLDER_NAME);
 
@@ -397,8 +397,8 @@ export async function createCuratedPlaylist(
           initialDelayMs: APPLE_MUSIC_MOVE_INITIAL_DELAY_MS,
         })
       : false;
-  if (previewData.proposalPath) {
-    await updateProposalFile(previewData.proposalPath, {
+  if (proposalData.proposalPath) {
+    await updateProposalFile(proposalData.proposalPath, {
       updatedAt: new Date().toISOString(),
       createdPlaylist: {
         playlistId: created.id,
@@ -418,7 +418,7 @@ export async function createCuratedPlaylist(
     }
   }
 
-  const preview = selected.slice(0, 10).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
+  const topPicks = selected.slice(0, 10).map((song, index) => `${index + 1}. ${songLabel(song)}`).join("\n");
   const remainder = selected.length > 10 ? `\n...and ${selected.length - 10} more.` : "";
   const planSummary = [
     plan.inferredGenres.length > 0 ? `Genres: ${plan.inferredGenres.join(", ")}` : "",
@@ -439,7 +439,7 @@ export async function createCuratedPlaylist(
           `\nFolder: ${APPLE_MUSIC_FOLDER_NAME}${movedToFolder ? "" : " (pending sync to Music.app)"}` +
           `${planSummary ? `\n${planSummary}` : ""}` +
           `${uncoveredMajorFacets.length > 0 ? `\nUncovered facets: ${uncoveredMajorFacets.join(", ")}` : ""}` +
-          `\n\nTop picks:\n${preview}${remainder}${playbackMessage}`,
+          `\n\nTop picks:\n${topPicks}${remainder}${playbackMessage}`,
       },
     ],
     details: {
@@ -450,9 +450,9 @@ export async function createCuratedPlaylist(
       parentFolderId,
       movedToFolder,
       plan,
-      selectionSeed: previewData.selectionSeed,
-      proposalId: previewData.proposalId,
-      proposalPath: previewData.proposalPath,
+      selectionSeed: proposalData.selectionSeed,
+      proposalId: proposalData.proposalId,
+      proposalPath: proposalData.proposalPath,
       uncoveredMajorFacets,
       songs: selectedCandidates.map((candidate) => ({
         id: candidate.song.id,

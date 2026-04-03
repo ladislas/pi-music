@@ -2,7 +2,7 @@
 
 Pi extension that:
 
-- previews and creates Apple Music playlists from natural-language descriptions
+- proposes and creates Apple Music playlists from natural-language descriptions
 - supports collaborative playlist planning with follow-up refinement directions
 - stores proposal files under `.pi/apple-music-proposals/` so previews can be inspected, reused, and refined later
 - places generated playlists inside the `piMusic` playlist folder in Apple Music
@@ -12,7 +12,7 @@ Pi extension that:
 Internally, the extension is split into two capability areas:
 
 - **Playback**: local Music.app transport control
-- **Playlists**: prompt interpretation, curation, preview, and creation
+- **Playlists**: prompt interpretation, curation, proposal, refinement, and creation
 
 `extensions/apple-music/index.ts` now acts as a thin composition layer that registers both sides.
 
@@ -21,7 +21,7 @@ Internally, the extension is split into two capability areas:
 Examples:
 
 - "Make me a playlist with tropical house, deep house, jazzy soulful tunes"
-- "Preview a playlist with tropical house, deep house, jazzy soulful tunes"
+- "Propose a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Create an Apple Music playlist with tropical house, deep house, jazzy soulful tunes"
 - "I want Chinese and Japanese lo-fi electronic music to study, concentrate and code"
 - "Pause Apple Music"
@@ -206,10 +206,10 @@ You can also store the same file in:
 
 Once configured, try one of these:
 
-- "Preview a playlist with tropical house, deep house, jazzy soulful tunes"
+- "Propose a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Create an Apple Music playlist with tropical house, deep house, jazzy soulful tunes"
 - `/apple-music-playlist tropical house, deep house, jazzy soulful tunes`
-- `/apple-music-preview tropical house, deep house, jazzy soulful tunes`
+- `/apple-music-propose tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-make tropical house, deep house, jazzy soulful tunes`
 - `/apple-music-proposal last`
 - `/apple-music-skipped last`
@@ -235,14 +235,14 @@ pi -e ./extensions/apple-music/index.ts
 
 Natural language:
 
-- "Preview a playlist with tropical house, deep house, jazzy soulful tunes"
+- "Propose a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Create me a playlist with tropical house, deep house, jazzy soulful tunes"
 - "Pause the music"
 - "Turn shuffle on and skip"
 - "Set repeat to all"
 - "Play my playlist Sunset House"
 
-For playlist generation, the preferred UX is collaborative planning or preview first, then create on confirmation. If the prompt is ambiguous, the extension can surface high-confidence picks, optional directions, familiar artists, and quick refinement questions instead of pretending the first result is perfect. If the user explicitly says to create immediately, pi can bypass preview.
+For playlist generation, the preferred UX is collaborative planning or proposal first, then create on confirmation. If the prompt is ambiguous, the extension can surface high-confidence picks, optional directions, familiar artists, and quick refinement questions instead of pretending the first result is perfect. If the user explicitly says to create immediately, pi can bypass the proposal step.
 
 When playlists are created through pi, the extension first tries to place them directly in the `piMusic` folder through the Apple Music API. On macOS, AppleScript folder creation/move is still used as a fallback if library folder placement through the API is unavailable.
 
@@ -259,7 +259,7 @@ Slash commands:
 - `/apple-music-shuffle on|off`
 - `/apple-music-repeat off|one|all`
 - `/apple-music-playlist <description>`
-- `/apple-music-preview <description>`
+- `/apple-music-propose <description>`
 - `/apple-music-make <description>`
 - `/apple-music-proposal [last|proposal-id]`
 - `/apple-music-skipped [last|proposal-id]`
@@ -272,7 +272,7 @@ Key files:
 
 - `extensions/apple-music/playback-registration.ts`: playback tool + slash commands
 - `extensions/apple-music/playlist-registration.ts`: playlist tool/command registration only
-- `extensions/apple-music/playlist-service.ts`: playlist curation, preview, and creation domain logic
+- `extensions/apple-music/playlist-service.ts`: playlist curation, proposal, and creation domain logic
 - `extensions/apple-music/transport.ts`: low-level AppleScript transport helpers
 - `extensions/apple-music/index.ts`: extension composition and shared status/help wiring
 

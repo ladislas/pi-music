@@ -3,29 +3,29 @@ import { Type } from "@sinclair/typebox";
 
 import { loadProposal, summarizeSkippedTracks } from "./config.js";
 import { runDescribedCommand, withPlaylistConfig } from "./command-helpers.js";
-import { createCuratedPlaylist, previewCuratedPlaylist } from "./playlist-service.js";
+import { createCuratedPlaylist, proposeCuratedPlaylist } from "./playlist-service.js";
 import { appendAssistantTextMessage } from "./utils.js";
 
 export function registerAppleMusicPlaylists(pi: ExtensionAPI) {
   pi.registerTool({
-    name: "apple_music_preview_playlist",
-    label: "Apple Music Playlist Preview",
-    description: "Preview an Apple Music playlist proposal from a natural-language description before creating it.",
-    promptSnippet: "Preview curated Apple Music playlists from natural-language mood, genre, vibe, and discovery descriptions.",
+    name: "apple_music_propose_playlist",
+    label: "Apple Music Playlist Proposal",
+    description: "Propose an Apple Music playlist from a natural-language description before creating it.",
+    promptSnippet: "Propose curated Apple Music playlists from natural-language mood, genre, vibe, and discovery descriptions.",
     promptGuidelines: [
-      "Prefer apple_music_preview_playlist first when the user asks for a playlist, unless they explicitly ask to create it immediately.",
+      "Prefer apple_music_propose_playlist first when the user asks for a playlist, unless they explicitly ask to create it immediately.",
       "Show the proposed playlist name, genres, and tracklist so the user can review before creation.",
       "Interpret genre requests as curation requests, not literal title matching. Prefer representative artists, editorial playlist signals, and artist-led discovery.",
     ],
     parameters: Type.Object({
       description: Type.String({ description: "Natural-language playlist brief, e.g. tropical house, deep house, jazzy soulful tunes" }),
       playlistName: Type.Optional(Type.String({ description: "Optional proposed playlist name" })),
-      trackCount: Type.Optional(Type.Number({ minimum: 5, description: "How many tracks to include in the preview. Defaults to 25, or all tracks for discography requests." })),
-      selectionSeed: Type.Optional(Type.String({ description: "Optional seed to reproduce a prior preview exactly." })),
+      trackCount: Type.Optional(Type.Number({ minimum: 5, description: "How many tracks to include in the proposal. Defaults to 25, or all tracks for discography requests." })),
+      selectionSeed: Type.Optional(Type.String({ description: "Optional seed to reproduce a prior proposal exactly." })),
     }),
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await withPlaylistConfig(ctx);
-      return previewCuratedPlaylist(config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
+      return proposeCuratedPlaylist(config, params, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
     },
   });
 
@@ -35,9 +35,9 @@ export function registerAppleMusicPlaylists(pi: ExtensionAPI) {
     description: "Create an Apple Music playlist from a natural-language description using the Apple Music catalog and curated Apple Music signals.",
     promptSnippet: "Create curated Apple Music playlists from natural-language mood, genre, vibe, and discovery descriptions.",
     promptGuidelines: [
-      "Use apple_music_preview_playlist first when the user asks for a playlist, unless they explicitly ask to create it immediately or confirm a reviewed proposal.",
-      "Use apple_music_create_playlist when the user explicitly asks to create now, skip preview, or confirms a reviewed playlist proposal.",
-      "When confirming a reviewed preview, reuse the preview selectionSeed if it is available so the created playlist matches the reviewed tracklist exactly.",
+      "Use apple_music_propose_playlist first when the user asks for a playlist, unless they explicitly ask to create it immediately or confirm a reviewed proposal.",
+      "Use apple_music_create_playlist when the user explicitly asks to create now, skip proposal, or confirms a reviewed playlist proposal.",
+      "When confirming a reviewed proposal, reuse the proposal selectionSeed if it is available so the created playlist matches the reviewed tracklist exactly.",
       "Interpret genre requests as curation requests, not literal title matching. Prefer representative artists, editorial playlist signals, and artist-led discovery.",
       "When the user says things like 'I want to get into k-pop' or 'where should I start with jazz', treat that as a discovery request and build an accessible starter playlist.",
       "Use apple_music_transport for local Music.app playback controls like play, pause, skip, shuffle/random, repeat, volume, or playing a specific playlist.",
@@ -47,7 +47,7 @@ export function registerAppleMusicPlaylists(pi: ExtensionAPI) {
       playlistName: Type.Optional(Type.String({ description: "Optional explicit playlist name" })),
       trackCount: Type.Optional(Type.Number({ minimum: 5, description: "How many tracks to include. Defaults to 25, or all tracks for discography requests." })),
       startPlaying: Type.Optional(Type.Boolean({ description: "If true, try to start playing the playlist locally after creating it." })),
-      selectionSeed: Type.Optional(Type.String({ description: "Optional seed from a reviewed preview to recreate the exact same tracklist." })),
+      selectionSeed: Type.Optional(Type.String({ description: "Optional seed from a reviewed proposal to recreate the exact same tracklist." })),
     }),
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
       const config = await withPlaylistConfig(ctx);
@@ -78,27 +78,27 @@ export function registerAppleMusicPlaylists(pi: ExtensionAPI) {
     });
   };
 
-  const runPreview = async (description: string, ctx: any) => {
+  const runProposal = async (description: string, ctx: any) => {
     const config = await withPlaylistConfig(ctx);
-    return previewCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
+    return proposeCuratedPlaylist(config, { description }, { model: ctx.model, modelRegistry: ctx.modelRegistry, plannerModel: config.plannerModel, cwd: ctx.cwd });
   };
 
   registerDescribedPlaylistCommand("apple-music-playlist", "Start collaborative Apple Music playlist planning from a text description", {
     usage: "/apple-music-playlist <description>",
-    progressMessage: "Working on playlist preview...",
-    successMessage: "Playlist preview ready.",
-    failurePrefix: "Playlist preview failed",
-    fallbackText: (description) => `Previewed playlist for ${description}.`,
-    run: runPreview,
+    progressMessage: "Working on playlist proposal...",
+    successMessage: "Playlist proposal ready.",
+    failurePrefix: "Playlist proposal failed",
+    fallbackText: (description) => `Proposed playlist for ${description}.`,
+    run: runProposal,
   });
 
-  registerDescribedPlaylistCommand("apple-music-preview", "Preview an Apple Music playlist from a text description", {
-    usage: "/apple-music-preview <description>",
-    progressMessage: "Working on playlist preview...",
-    successMessage: "Playlist preview ready.",
-    failurePrefix: "Playlist preview failed",
-    fallbackText: (description) => `Previewed playlist for ${description}.`,
-    run: runPreview,
+  registerDescribedPlaylistCommand("apple-music-propose", "Propose an Apple Music playlist from a text description", {
+    usage: "/apple-music-propose <description>",
+    progressMessage: "Working on playlist proposal...",
+    successMessage: "Playlist proposal ready.",
+    failurePrefix: "Playlist proposal failed",
+    fallbackText: (description) => `Proposed playlist for ${description}.`,
+    run: runProposal,
   });
 
   registerDescribedPlaylistCommand("apple-music-make", "Create an Apple Music playlist from a text description", {
